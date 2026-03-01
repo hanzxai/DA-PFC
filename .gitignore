@@ -1,0 +1,33 @@
+# ============================================
+# DA-PFC Project .gitignore
+# ============================================
+
+# --- 仿真输出 (数据文件太大, 不应入库) ---
+outputs/
+
+# --- Python 缓存 ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+
+# --- Jupyter Notebook ---
+.ipynb_checkpoints/
+
+# --- IDE / 编辑器 ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- 操作系统 ---
+.DS_Store
+Thumbs.db
+
+# --- 临时文件 ---
+tmp/
+*.log
