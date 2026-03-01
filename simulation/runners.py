@@ -4,8 +4,10 @@
 (网络构建 → 参数计算 → 内核调用 → 数据打包)
 """
 import time
+import threading
 import torch
 import numpy as np
+from tqdm import tqdm
 
 import config
 from models.network import create_network_structure
@@ -72,7 +74,90 @@ def _sync_and_report(t0: float):
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     elapsed = time.time() - t0
-    print(f"✅ Finished in {elapsed:.4f}s")
+    print(f"✅ Finished in {elapsed:.2f}s")
+    return elapsed
+
+
+def _run_kernel_with_progress(kernel_fn, kernel_args: tuple, duration_ms: float, dt: float):
+    """
+    在后台线程执行 JIT 内核, 主线程显示 tqdm 进度条。
+
+    因为 @torch.jit.script 内核无法被 Python 直接插桩,
+    进度条基于「已用时间 / 预估总时间」来推进。
+    首次运行时 JIT 编译会额外耗时, 进度条可能不完全准确。
+
+    原理:
+      1) 内核在后台线程中执行
+      2) 主线程轮询线程状态, 用「已过时间 / 预估总时间」推动进度条
+      3) JIT 首次编译阶段 (前几秒) 进度条暂停并提示 "compiling"
+      4) 内核完成后进度条跳至 100%
+    """
+    steps = int(duration_ms / dt)
+    result_container = [None]
+    error_container = [None]
+    kernel_started = threading.Event()   # JIT 编译完成标记
+    t_compute_start = [0.0]              # 实际计算开始时间
+
+    def _worker():
+        try:
+            # 首次调用会触发 JIT 编译 (阻塞), 之后才进入实际计算
+            result_container[0] = kernel_fn(*kernel_args)
+        except Exception as e:
+            error_container[0] = e
+
+    # 启动内核线程
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+    bar = tqdm(total=steps, desc="⚡ Simulating", unit="step",
+               bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]")
+
+    poll_interval = 0.3       # 轮询间隔 (秒)
+    jit_warmup = 3.0          # 预估 JIT 编译开销 (秒)
+    t_start = time.time()
+    last_update = 0
+    total_estimated = None     # 将在 JIT 预热后首次估算
+
+    while thread.is_alive():
+        thread.join(timeout=poll_interval)
+        elapsed = time.time() - t_start
+
+        if elapsed < jit_warmup:
+            # JIT 编译 / GPU 预热阶段
+            bar.set_postfix_str("⏳ JIT compiling...")
+            continue
+
+        if not thread.is_alive():
+            break
+
+        # 计算阶段: 用已消耗时间线性推算总耗时
+        compute_elapsed = elapsed - jit_warmup
+
+        if total_estimated is None:
+            # 首次进入计算阶段, 用一个小比例初始化
+            total_estimated = compute_elapsed / 0.01  # 假设才跑了 1%
+            bar.set_postfix_str("estimating...")
+        else:
+            # 随着时间推移, 不断修正预估总时间 (取最近的速率)
+            # 进度上限 98%, 避免过早到 100%
+            pct = min(0.98, compute_elapsed / total_estimated)
+            new_pos = int(steps * pct)
+            increment = new_pos - last_update
+            if increment > 0:
+                bar.update(increment)
+                last_update = new_pos
+            bar.set_postfix_str(f"{elapsed:.1f}s")
+
+    # 完成: 补齐进度条到 100%
+    final_gap = steps - last_update
+    if final_gap > 0:
+        bar.update(final_gap)
+    bar.close()
+
+    if error_container[0] is not None:
+        raise error_container[0]
+
+    return result_container[0]
 
 
 # ==============================================================================
@@ -100,10 +185,11 @@ def run_simulation_in_memory(device_name: str = "cuda:0"):
         N, mask_d1, mask_d2, da_conditions, device
     )
 
-    print("⚡ Running Simulation...")
     t0 = time.time()
-    all_spikes, v_traces = run_batch_network(
-        W_t, mod_R, I_mod, scale_syn, duration, dt, record_indices
+    all_spikes, v_traces = _run_kernel_with_progress(
+        run_batch_network,
+        (W_t, mod_R, I_mod, scale_syn, duration, dt, record_indices),
+        duration, dt,
     )
     _sync_and_report(t0)
 
@@ -140,10 +226,12 @@ def run_simulation_stepped(device_name: str = "cuda:0", da_level: float = 10.0):
         N, mask_d1, mask_d2, da_levels_active, device
     )
 
-    print(f"⚡ Running Simulation (Onset at {DA_ONSET}ms)...")
+    print(f"   DA Onset at {DA_ONSET}ms")
     t0 = time.time()
-    all_spikes, v_traces = run_batch_network_stepped(
-        W_t, params_rest, params_active, duration, dt, DA_ONSET, record_indices
+    all_spikes, v_traces = _run_kernel_with_progress(
+        run_batch_network_stepped,
+        (W_t, params_rest, params_active, duration, dt, DA_ONSET, record_indices),
+        duration, dt,
     )
     _sync_and_report(t0)
 
@@ -181,12 +269,13 @@ def run_simulation_d1_kinetics(duration: float = None, target_da: float = None):
     W_t, mask_d1, mask_d2, groups_info = _init_network(device)
     record_indices = _build_record_indices(groups_info, device, full=True)
 
-    print("⚡ Running Kernel...")
     t0 = time.time()
-    all_spikes, v_traces = run_dynamic_d1_kernel(
-        W_t, mask_d1, mask_d2,
-        float(target_da), float(da_onset), float(duration), dt,
-        record_indices,
+    all_spikes, v_traces = _run_kernel_with_progress(
+        run_dynamic_d1_kernel,
+        (W_t, mask_d1, mask_d2,
+         float(target_da), float(da_onset), float(duration), dt,
+         record_indices),
+        duration, dt,
     )
     _sync_and_report(t0)
 

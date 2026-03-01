@@ -6,11 +6,23 @@ DA-PFC 仿真主入口
   python main.py                          # 使用默认值
 """
 import argparse
+import time
 import config
 from simulation.runners import run_simulation_d1_kinetics
 from analysis.analyzer import PFCAnalyzer
 from analysis.plotting import plot_population_rates
 from utils import setup_experiment_folder, save_args, save_raw_data
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    """将秒数格式化为 HH:MM:SS.ss"""
+    m, s = divmod(seconds, 60)
+    h, m = divmod(int(m), 60)
+    if h > 0:
+        return f"{h}h {m:02d}m {s:05.2f}s"
+    if m > 0:
+        return f"{m}m {s:05.2f}s"
+    return f"{s:.2f}s"
 
 
 def parse_args():
@@ -26,6 +38,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    t_total_start = time.time()
 
     # 1. 准备实验文件夹
     save_dir = setup_experiment_folder()
@@ -41,19 +54,36 @@ def main():
 
     # 3. 运行仿真
     print(f"🚀 Starting Experiment: {exp_config['note']}")
+    t_sim_start = time.time()
     data = run_simulation_d1_kinetics(
         duration=args.duration,
         target_da=args.da,
     )
+    t_sim_elapsed = time.time() - t_sim_start
 
     # 4. 保存原始数据
+    t_save_start = time.time()
     save_raw_data(data, save_dir)
+    t_save_elapsed = time.time() - t_save_start
 
     # 5. 分析与绘图
     print("🎨 Generating Plots...")
+    t_plot_start = time.time()
     analyzer = PFCAnalyzer(data)
     plot_population_rates(analyzer, save_dir=save_dir, batch_idx=args.batch)
+    t_plot_elapsed = time.time() - t_plot_start
 
+    # 6. 总计时报告
+    t_total_elapsed = time.time() - t_total_start
+    print("\n" + "=" * 50)
+    print("⏱️  计时报告")
+    print("=" * 50)
+    print(f"  仿真计算:  {_fmt_elapsed(t_sim_elapsed)}")
+    print(f"  数据保存:  {_fmt_elapsed(t_save_elapsed)}")
+    print(f"  分析绘图:  {_fmt_elapsed(t_plot_elapsed)}")
+    print(f"  ────────────────────────")
+    print(f"  总计:      {_fmt_elapsed(t_total_elapsed)}")
+    print("=" * 50)
     print(f"\n✅ Experiment Complete. Results saved in: {save_dir}")
 
 
