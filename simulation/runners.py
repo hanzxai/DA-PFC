@@ -83,24 +83,17 @@ def _run_kernel_with_progress(kernel_fn, kernel_args: tuple, duration_ms: float,
     在后台线程执行 JIT 内核, 主线程显示 tqdm 进度条。
 
     因为 @torch.jit.script 内核无法被 Python 直接插桩,
-    进度条基于「已用时间 / 预估总时间」来推进。
-    首次运行时 JIT 编译会额外耗时, 进度条可能不完全准确。
-
-    原理:
-      1) 内核在后台线程中执行
-      2) 主线程轮询线程状态, 用「已过时间 / 预估总时间」推动进度条
-      3) JIT 首次编译阶段 (前几秒) 进度条暂停并提示 "compiling"
-      4) 内核完成后进度条跳至 100%
+    进度条基于「已用时间 / 预估总时间」来推进, 采用渐进式估算:
+      - JIT 编译阶段: 显示 "compiling"
+      - 计算阶段: 进度按 smoothstep 曲线推进, 保证不会过早到 100%
+      - 内核完成: 跳至 100%
     """
     steps = int(duration_ms / dt)
     result_container = [None]
     error_container = [None]
-    kernel_started = threading.Event()   # JIT 编译完成标记
-    t_compute_start = [0.0]              # 实际计算开始时间
 
     def _worker():
         try:
-            # 首次调用会触发 JIT 编译 (阻塞), 之后才进入实际计算
             result_container[0] = kernel_fn(*kernel_args)
         except Exception as e:
             error_container[0] = e
@@ -116,37 +109,35 @@ def _run_kernel_with_progress(kernel_fn, kernel_args: tuple, duration_ms: float,
     jit_warmup = 3.0          # 预估 JIT 编译开销 (秒)
     t_start = time.time()
     last_update = 0
-    total_estimated = None     # 将在 JIT 预热后首次估算
 
     while thread.is_alive():
         thread.join(timeout=poll_interval)
-        elapsed = time.time() - t_start
-
-        if elapsed < jit_warmup:
-            # JIT 编译 / GPU 预热阶段
-            bar.set_postfix_str("⏳ JIT compiling...")
-            continue
-
         if not thread.is_alive():
             break
 
-        # 计算阶段: 用已消耗时间线性推算总耗时
-        compute_elapsed = elapsed - jit_warmup
+        elapsed = time.time() - t_start
 
-        if total_estimated is None:
-            # 首次进入计算阶段, 用一个小比例初始化
-            total_estimated = compute_elapsed / 0.01  # 假设才跑了 1%
-            bar.set_postfix_str("estimating...")
-        else:
-            # 随着时间推移, 不断修正预估总时间 (取最近的速率)
-            # 进度上限 98%, 避免过早到 100%
-            pct = min(0.98, compute_elapsed / total_estimated)
-            new_pos = int(steps * pct)
-            increment = new_pos - last_update
-            if increment > 0:
-                bar.update(increment)
-                last_update = new_pos
-            bar.set_postfix_str(f"{elapsed:.1f}s")
+        if elapsed < jit_warmup:
+            bar.set_postfix_str("⏳ JIT compiling...")
+            continue
+
+        # ── 渐进式进度估算 ──
+        # 思路: 不预测"总时间", 而是让进度按 1-1/(1+kt) 曲线自然增长。
+        # 这条曲线从 0 单调增到 1, 且永远 <1, 所以进度条不会在完成前到 100%.
+        # k 越大进度越快; 这里用 k=0.06 使得:
+        #   10s 计算 → 显示 ~30%
+        #   30s 计算 → 显示 ~62%
+        #   60s 计算 → 显示 ~78%
+        #  120s 计算 → 显示 ~88%
+        compute_elapsed = elapsed - jit_warmup
+        k = 0.06
+        pct = compute_elapsed * k / (1.0 + compute_elapsed * k)  # 范围 [0, 1)
+        new_pos = int(steps * pct)
+        increment = new_pos - last_update
+        if increment > 0:
+            bar.update(increment)
+            last_update = new_pos
+        bar.set_postfix_str(f"{elapsed:.1f}s")
 
     # 完成: 补齐进度条到 100%
     final_gap = steps - last_update

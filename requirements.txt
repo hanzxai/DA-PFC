@@ -1,5 +1,5 @@
-torch>=2.0.0
-numpy>=1.24.0
-scipy>=1.10.0
-matplotlib>=3.7.0
-tqdm>=4.65.0
+torch>=2.0.0        # GPU 加速脉冲神经网络仿真 + JIT 编译
+numpy>=1.24.0       # 数组运算、随机种子
+scipy>=1.10.0       # signal.welch 频谱分析
+matplotlib>=3.7.0   # 栅格图、频率曲线绑图
+tqdm>=4.65.0        # 仿真进度条
