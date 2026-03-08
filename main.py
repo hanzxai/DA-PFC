@@ -8,9 +8,9 @@ DA-PFC 仿真主入口
 import argparse
 import time
 import config
-from simulation.runners import run_simulation_d1_kinetics
+from simulation.runners import run_simulation_d1_d2_kinetics
 from analysis.analyzer import PFCAnalyzer
-from analysis.plotting import plot_population_rates
+from analysis.plotting import plot_population_rates, plot_raster_figure, plot_excitatory_rates, plot_inhibitory_rates
 from utils import setup_experiment_folder, save_args, save_raw_data
 
 
@@ -48,14 +48,14 @@ def main():
         "duration": args.duration,
         "target_da": args.da,
         "dt": config.DT,
-        "note": f"D1 受体动力学 (Tau_on={config.TAU_ON_D1}ms, DA={args.da}nM)",
+        "note": f"D1+D2 受体动力学 (D1 Tau_on={config.TAU_ON_D1}ms, D2 Tau_on={config.TAU_ON_D2}ms, DA={args.da}nM)",
     }
     save_args(exp_config, save_dir)
 
     # 3. 运行仿真
     print(f"🚀 Starting Experiment: {exp_config['note']}")
     t_sim_start = time.time()
-    data = run_simulation_d1_kinetics(
+    data = run_simulation_d1_d2_kinetics(
         duration=args.duration,
         target_da=args.da,
     )
@@ -71,6 +71,9 @@ def main():
     t_plot_start = time.time()
     analyzer = PFCAnalyzer(data)
     plot_population_rates(analyzer, save_dir=save_dir, batch_idx=args.batch)
+    plot_excitatory_rates(analyzer, save_dir=save_dir, batch_idx=args.batch)
+    plot_inhibitory_rates(analyzer, save_dir=save_dir, batch_idx=args.batch)
+    plot_raster_figure(analyzer, save_dir=save_dir, batch_idx=args.batch)
     t_plot_elapsed = time.time() - t_plot_start
 
     # 6. 总计时报告

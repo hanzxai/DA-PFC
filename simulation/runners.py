@@ -15,8 +15,14 @@ from models.kernels import (
     run_batch_network,
     run_batch_network_stepped,
     run_dynamic_d1_kernel,
+    run_dynamic_d1_d2_kernel,
+    verify_kernel_params_consistent,
 )
 from models.pharmacology import get_batch_modulation_params, get_stepped_modulation_params
+
+# 启动时校验 kernels.py 硬编码参数与 config.py 是否一致
+# 若不一致会立即抛出 AssertionError, 防止静默使用错误参数运行仿真
+verify_kernel_params_consistent()
 
 
 # ==============================================================================
@@ -179,7 +185,7 @@ def run_simulation_in_memory(device_name: str = "cuda:0"):
     t0 = time.time()
     all_spikes, v_traces = _run_kernel_with_progress(
         run_batch_network,
-        (W_t, mod_R, I_mod, scale_syn, duration, dt, record_indices),
+        (W_t, mod_R, I_mod, scale_syn, duration, dt, record_indices, config.N_E),
         duration, dt,
     )
     _sync_and_report(t0)
@@ -221,7 +227,7 @@ def run_simulation_stepped(device_name: str = "cuda:0", da_level: float = 10.0):
     t0 = time.time()
     all_spikes, v_traces = _run_kernel_with_progress(
         run_batch_network_stepped,
-        (W_t, params_rest, params_active, duration, dt, DA_ONSET, record_indices),
+        (W_t, params_rest, params_active, duration, dt, DA_ONSET, record_indices, config.N_E),
         duration, dt,
     )
     _sync_and_report(t0)
@@ -235,7 +241,7 @@ def run_simulation_stepped(device_name: str = "cuda:0", da_level: float = 10.0):
 
 
 # ==============================================================================
-# Runner 3: D1 受体动力学 (alpha_D1 遵循一阶 ODE)
+# Runner 3: D1 受体动力学 (alpha_D1 遵循一阶 ODE, D2 瞬时) [旧版, 保留兼容]
 # ==============================================================================
 
 def run_simulation_d1_kinetics(duration: float = None, target_da: float = None):
@@ -265,7 +271,7 @@ def run_simulation_d1_kinetics(duration: float = None, target_da: float = None):
         run_dynamic_d1_kernel,
         (W_t, mask_d1, mask_d2,
          float(target_da), float(da_onset), float(duration), dt,
-         record_indices),
+         record_indices, config.N_E),
         duration, dt,
     )
     _sync_and_report(t0)
@@ -276,6 +282,58 @@ def run_simulation_d1_kinetics(duration: float = None, target_da: float = None):
             'duration': duration, 'dt': dt,
             'da_onset': da_onset, 'da_level': target_da,
             'mode': 'dynamic_d1_kinetics',
+        },
+        mask_d1=mask_d1, mask_d2=mask_d2, groups_info=groups_info,
+        spikes=all_spikes, v_traces=v_traces, record_indices=record_indices,
+    )
+
+
+# ==============================================================================
+# Runner 4: D1 + D2 受体动力学 (alpha_D1 和 alpha_D2 均遵循一阶 ODE)
+# ==============================================================================
+
+def run_simulation_d1_d2_kinetics(duration: float = None, target_da: float = None):
+    """
+    D1 + D2 受体动力学仿真:
+    - alpha_D1 按 τ_on=30876ms / τ_off=164472ms 缓慢爬升/衰减
+    - alpha_D2 按 τ_on=10000ms / τ_off=50000ms 更快响应
+    Batch 0 = Control (0 nM), Batch 1 = Experiment (target_da nM)
+    """
+    device = config.DEVICE
+
+    if duration is None:
+        duration = 100000.0  # 100 秒 (因为 D1 Tau ≈ 30s)
+    if target_da is None:
+        target_da = 10.0
+
+    dt = config.DT
+    da_onset = config.DEFAULT_DA_ONSET
+
+    print(f"🚀 Simulation running on {device}")
+    print(f"   Mode: Dynamic D1 + D2 Kinetics")
+    print(f"   D1: τ_on={config.TAU_ON_D1}ms, EC50={config.EC50_D1}nM")
+    print(f"   D2: τ_on={config.TAU_ON_D2}ms, EC50={config.EC50_D2}nM")
+    print(f"   Duration: {duration}ms, Target DA: {target_da}nM, DA onset: {da_onset}ms")
+
+    W_t, mask_d1, mask_d2, groups_info = _init_network(device)
+    record_indices = _build_record_indices(groups_info, device, full=True)
+
+    t0 = time.time()
+    all_spikes, v_traces = _run_kernel_with_progress(
+        run_dynamic_d1_d2_kernel,
+        (W_t, mask_d1, mask_d2,
+         float(target_da), float(da_onset), float(duration), dt,
+         record_indices, config.N_E),
+        duration, dt,
+    )
+    _sync_and_report(t0)
+
+    return _pack_data(
+        cfg_dict={
+            'N_E': config.N_E, 'N_I': config.N_I,
+            'duration': duration, 'dt': dt,
+            'da_onset': da_onset, 'da_level': target_da,
+            'mode': 'dynamic_d1_d2_kinetics',
         },
         mask_d1=mask_d1, mask_d2=mask_d2, groups_info=groups_info,
         spikes=all_spikes, v_traces=v_traces, record_indices=record_indices,
