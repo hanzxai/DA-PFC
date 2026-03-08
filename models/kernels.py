@@ -395,9 +395,9 @@ def run_batch_network(
     steps = int(duration / dt)
 
     # --- LIF 参数 (与 config.py 一致) ---
-    V_rest, V_reset, V_th = 0.0, -5.0, 20.0
-    R_base, t_ref, tau_syn = 1.0, 5.0, 5.0
-    bg_mean, bg_std = 25.0, 5.0
+    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
+    R_base, t_ref, tau_syn = 0.1, 5.0, 5.0
+    bg_mean, bg_std = 190.0, 25.0  # V_ss=-51mV, σ_V=R_base*bg_std=0.1*25=2.5mV, drives spontaneous firing
     C_E, C_I = 250.0, 50.0  # membrane capacitance (pF): E=250, I=50
 
     # --- C_m 向量: (1, N), E 神经元=250, I 神经元=50 ---
@@ -479,9 +479,9 @@ def run_batch_network_stepped(
     steps = int(duration / dt)
 
     # --- LIF 参数 ---
-    V_rest, V_reset, V_th = 0.0, -5.0, 20.0
-    R_base, t_ref, tau_syn = 1.0, 5.0, 5.0
-    bg_mean, bg_std = 25.0, 5.0
+    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
+    R_base, t_ref, tau_syn = 0.1, 5.0, 5.0  # R_base unit: GΩ (= mV/pA)
+    bg_mean, bg_std = 190.0, 25.0  # V_ss=-51mV, σ_V=R_base*bg_std=0.1*25=2.5mV, drives spontaneous firing
     C_E, C_I = 250.0, 50.0  # membrane capacitance (pF): E=250, I=50
 
     # --- C_m 向量: (1, N), E 神经元=250, I 神经元=50 ---
@@ -577,11 +577,11 @@ def run_dynamic_d1_kernel(
     LAM_D1, LAM_D2 = 0.3, 0.2
 
     # --- LIF 参数 ---
-    # R_base: 基础膜电阻 (MΩ), 与代码内部单位一致 (V in mV, I in pA)
-    # τ_m = R_base * C_m: E 神经元 τ_m = 0.8 * 250 pF = 200 ms (归一化单位)
-    V_rest, V_reset, V_th = 0.0, -5.0, 20.0
-    R_base, tau_syn, t_ref = 1.0, 5.0, 5.0
-    bg_mean, bg_std = 25.0, 5.0
+    # R_base: 基础膜电阻 (GΩ = mV/pA), V in mV, I in pA
+    # τ_m = R_base * C_m: E 神经元 τ_m = 0.1 GΩ * 250 pF = 25 ms
+    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
+    R_base, tau_syn, t_ref = 0.1, 5.0, 5.0  # R_base unit: GΩ (= mV/pA)
+    bg_mean, bg_std = 190.0, 25.0  # V_ss=-51mV, σ_V=R_base*bg_std=0.1*25=2.5mV, drives spontaneous firing
     C_E, C_I = 250.0, 50.0  # membrane capacitance (pF): E=250, I=50
 
     # --- 初始化 ---
@@ -704,10 +704,11 @@ def run_dynamic_d1_d2_kernel(
     LAM_D1, LAM_D2 = 0.3, 0.2
 
     # --- LIF 参数 ---
-    # R_base: 基础膜电阻 (归一化单位, 与代码内部 mV/pA 量纲一致)
-    V_rest, V_reset, V_th = 0.0, -5.0, 20.0
-    R_base, tau_syn, t_ref = 1.0, 5.0, 5.0
-    bg_mean, bg_std = 25.0, 5.0
+    # R_base: 基础膜电阻 (GΩ = mV/pA), V in mV, I in pA
+    # τ_m = R_base * C_m: E 神经元 τ_m = 0.1 GΩ * 250 pF = 25 ms
+    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
+    R_base, tau_syn, t_ref = 0.1, 5.0, 5.0  # R_base unit: GΩ (= mV/pA)
+    bg_mean, bg_std = 190.0, 25.0  # V_ss=-51mV, σ_V=R_base*bg_std=0.1*25=2.5mV, drives spontaneous firing
     C_E, C_I = 250.0, 50.0  # membrane capacitance (pF): E=250, I=50
 
     # --- 初始化 ---
@@ -836,14 +837,14 @@ def verify_kernel_params_consistent() -> None:
         "LAM_D1":     0.3,
         "LAM_D2":     0.2,
         # LIF 参数
-        "V_REST":     0.0,
-        "V_RESET":   -5.0,
-        "V_TH":       20.0,
-        "R_BASE":     1.0,
+        "V_REST":     -70.0,
+        "V_RESET":   -75.0,
+        "V_TH":       -50.0,
+        "R_BASE":     0.1,
         "TAU_SYN":    5.0,
         "T_REF":      5.0,
-        "BG_MEAN":    25.0,
-        "BG_STD":     5.0,
+        "BG_MEAN":    190.0,
+"BG_STD":     25.0,
     }
 
     errors: list = []

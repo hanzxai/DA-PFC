@@ -170,7 +170,7 @@ $$
 | `V_REST` | $V_{rest}$ | 0.0 | mV | Resting membrane potential |
 | `V_RESET` | $V_{reset}$ | −5.0 | mV | Post-spike reset potential |
 | `V_TH` | $V_{th}$ | 20.0 | mV | Spike threshold |
-| `R_BASE` | $R_{base}$ | 1.0 | MΩ (normalized) | Baseline membrane resistance |
+| `R_BASE` | $R_{base}$ | 0.1 | GΩ (= mV/pA = 100 MΩ) | Baseline membrane resistance |
 | `C_E` | $C_E$ | 250.0 | pF | Excitatory membrane capacitance |
 | `C_I` | $C_I$ | 50.0 | pF | Inhibitory membrane capacitance |
 | `TAU_SYN` | $\tau_{syn}$ | 5.0 | ms | Synaptic current decay time constant |

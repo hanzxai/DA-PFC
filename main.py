@@ -70,10 +70,13 @@ def main():
     print("🎨 Generating Plots...")
     t_plot_start = time.time()
     analyzer = PFCAnalyzer(data)
-    plot_population_rates(analyzer, save_dir=save_dir, batch_idx=args.batch)
-    plot_excitatory_rates(analyzer, save_dir=save_dir, batch_idx=args.batch)
-    plot_inhibitory_rates(analyzer, save_dir=save_dir, batch_idx=args.batch)
-    plot_raster_figure(analyzer, save_dir=save_dir, batch_idx=args.batch)
+    # 同时绘制 Batch 0 (Control) 和 Batch 1 (Exp) 的图
+    for batch_id in [0, 1]:
+        print(f"\n--- Batch {batch_id} ({'Control' if batch_id == 0 else 'Exp'}) ---")
+        plot_population_rates(analyzer, save_dir=save_dir, batch_idx=batch_id)
+        plot_excitatory_rates(analyzer, save_dir=save_dir, batch_idx=batch_id)
+        plot_inhibitory_rates(analyzer, save_dir=save_dir, batch_idx=batch_id)
+        plot_raster_figure(analyzer, save_dir=save_dir, batch_idx=batch_id)
     t_plot_elapsed = time.time() - t_plot_start
 
     # 6. 总计时报告
