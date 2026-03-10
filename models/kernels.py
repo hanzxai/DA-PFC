@@ -871,10 +871,12 @@ def verify_kernel_params_consistent() -> None:
         "V_RESET":   -75.0,
         "V_TH":       -50.0,
         "R_BASE":     0.1,
+        "C_E":        250.0,
+        "C_I":        90.0,
         "TAU_SYN":    5.0,
         "T_REF":      5.0,
         "BG_MEAN":    190.0,
-"BG_STD":     25.0,
+        "BG_STD":     25.0,
     }
 
     errors: list = []

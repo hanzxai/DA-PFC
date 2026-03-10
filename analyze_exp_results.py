@@ -81,4 +81,9 @@ def analyze_results(output_dir):
         }
 
 if __name__ == "__main__":
-    analyze_results('/data/workspace/code/git-code/sss/DA-PFC/outputs/exp_2026-03-07_23-05-14')
+    import sys
+    if len(sys.argv) < 2:
+        print("Usage: python analyze_exp_results.py <exp_dir>")
+        print("  e.g. python analyze_exp_results.py outputs/exp_2026-03-10_10-40-25")
+        sys.exit(1)
+    analyze_results(sys.argv[1])

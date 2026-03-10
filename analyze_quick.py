@@ -1,7 +1,15 @@
 import pickle
+import sys
 import numpy as np
 
-EXP_DIR = "outputs/exp_2026-03-08_21-28-29/raw_data.pkl"
+if len(sys.argv) < 2:
+    print("Usage: python analyze_quick.py <exp_dir_or_pkl_path>")
+    print("  e.g. python analyze_quick.py outputs/exp_2026-03-10_10-40-25")
+    print("       python analyze_quick.py outputs/exp_2026-03-10_10-40-25/raw_data.pkl")
+    sys.exit(1)
+
+_arg = sys.argv[1].rstrip('/')
+EXP_DIR = _arg if _arg.endswith('.pkl') else f"{_arg}/raw_data.pkl"
 
 print("Loading data...")
 with open(EXP_DIR, "rb") as f:

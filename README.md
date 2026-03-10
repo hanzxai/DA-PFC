@@ -1,12 +1,39 @@
 # DA-PFC Spiking Neural Network Simulation
 
-> Dopamine modulation of Prefrontal Cortex — LIF network with D1/D2 receptor dynamics
+> Dopamine modulation of Prefrontal Cortex — LIF network with D1/D2 receptor dynamics (Langmuir binding kinetics)
 
 ---
 
-## 1. Network Architecture
+## 1. Project Structure
 
-### 1.1 Population Composition
+```
+DA-PFC/
+├── main.py                    # Entry point (CLI)
+├── config.py                  # Global parameters (Single Source of Truth)
+├── utils.py                   # Experiment folder management, serialization
+├── simulation/
+│   ├── __init__.py
+│   └── runners.py             # 4 simulation runners (static / stepped / D1 / D1+D2)
+├── models/
+│   ├── __init__.py
+│   ├── network.py             # Network structure builder (W matrix, D1/D2 masks)
+│   ├── pharmacology.py        # Pharmacological parameter computation (Sigmoid)
+│   └── kernels.py             # JIT-compiled simulation kernels (@torch.jit.script)
+├── analysis/
+│   ├── __init__.py
+│   ├── analyzer.py            # PFCAnalyzer: firing rates, FFT, reports
+│   └── plotting.py            # Plotting functions (full-scale + zoom-in)
+├── analyze_exp.py             # Post-hoc analysis script for saved experiments
+├── analyze_exp_results.py     # Batch experiment result analysis
+├── analyze_quick.py           # Quick analysis script
+└── outputs/                   # Experiment outputs (git-ignored)
+```
+
+---
+
+## 2. Network Architecture
+
+### 2.1 Population Composition
 
 | Population | Count | Proportion | Receptor Expression |
 |---|---|---|---|
@@ -14,44 +41,46 @@
 | Inhibitory (I) | 200 | 20% | D1R: 30% of I; D2R: 10% of I |
 | **Total** | **1000** | 100% | — |
 
-### 1.2 Receptor Subpopulation Counts (approximate)
+### 2.2 Receptor Subpopulation Counts
 
-| Subpopulation | Count | Notes |
+| Subpopulation | Count | Neuron Index Range |
 |---|---|---|
-| E-D1 neurons | ~200 | 25% × 800 |
-| E-D2 neurons | ~120 | 15% × 800 |
-| I-D1 neurons | ~60 | 30% × 200 |
-| I-D2 neurons | ~20 | 10% × 200 |
-| E (no receptor) | ~480 | remaining E |
-| I (no receptor) | ~120 | remaining I |
+| E-D1 neurons | 200 | [0, 199] |
+| E-D2 neurons | 120 | [200, 319] |
+| E-Other | 480 | [320, 799] |
+| I-D1 neurons | 60 | [800, 859] |
+| I-D2 neurons | 20 | [860, 879] |
+| I-Other | 120 | [880, 999] |
 
 > Neurons are indexed as $[0, \ldots, 799]$ = E, $[800, \ldots, 999]$ = I.  
 > `mask_d1`, `mask_d2` are binary vectors of shape $(N,)$ marking receptor-expressing neurons.
 
-### 1.3 Connectivity
+### 2.3 Connectivity
 
 | Parameter | Value | Notes |
 |---|---|---|
-| Connection probability | 0.20 | random sparse Erdős–Rényi |
-| Excitatory weight $w_E$ | 0.3 | E→any |
-| Inhibitory weight $w_I$ | −2.0 | I→any |
+| Connection probability | 0.20 | Random sparse Erdős–Rényi |
+| Excitatory weight $w_E$ | 5.0 pA | E→any |
+| Inhibitory weight $w_I$ | −25.0 pA | I→any |
 
-Synaptic weight matrix $W \in \mathbb{R}^{N \times N}$, transposed to $W^T$ for efficient batch matmul.
+Synaptic weight matrix $W \in \mathbb{R}^{N \times N}$, transposed to $W^T$ for efficient batch matmul: `I_syn += spikes @ W_t`.
 
-### 1.4 Simulation Batches
+### 2.4 Simulation Batches
 
-Two parallel batches run simultaneously:
+Two parallel batches run simultaneously with **identical initial conditions and shared noise**:
 
 | Batch | DA concentration | Role |
 |---|---|---|
 | 0 | 0 nM (always) | Control |
 | 1 | `da_level` nM (after onset) | Experiment |
 
+> **Design:** Both batches share identical initial membrane potentials (`V_init` generated once with shape `(1, N)` then expanded) and identical background noise at every time step (`I_bg` generated with shape `(1, N)` then expanded). The **only** difference between batches is the DA concentration parameter.
+
 ---
 
-## 2. Mathematical Formulation
+## 3. Mathematical Formulation
 
-### 2.1 LIF Neuron Dynamics
+### 3.1 LIF Neuron Dynamics
 
 $$
 C_m \frac{dV}{dt} = -\frac{V - V_{rest}}{R_{eff}} + I_{total}
@@ -61,11 +90,17 @@ $$
 I_{total} = I_{syn} \cdot scale_{syn} + I_{bg} + I_{mod}
 $$
 
+**Euler integration:**
+
+$$
+V(t+dt) = V(t) + \frac{1}{C_m} \left[ -\frac{V - V_{rest}}{R_{eff}} + I_{total} \right] \cdot dt
+$$
+
 **Spike generation:** if $V > V_{th}$, emit spike and reset $V \leftarrow V_{reset}$.
 
 **Refractory period:** neuron is clamped during $[t_{spike},\ t_{spike} + t_{ref}]$.
 
-**Synaptic current decay (Euler):**
+**Synaptic current decay (exponential):**
 
 $$
 I_{syn}(t + dt) = I_{syn}(t) \cdot e^{-dt / \tau_{syn}} + \sum_j W_{ji} \cdot s_j(t)
@@ -75,7 +110,7 @@ where $s_j(t) = 1$ if neuron $j$ fires at time $t$.
 
 ---
 
-### 2.2 DA Receptor Activation — Sigmoid Target
+### 3.2 DA Receptor Activation — Sigmoid Target
 
 The instantaneous sigmoid target activation for receptor $r \in \{D1, D2\}$:
 
@@ -87,7 +122,7 @@ Before DA onset or for the control batch: $s_r = 0$.
 
 ---
 
-### 2.3 Receptor Kinetics — Langmuir Binding
+### 3.3 Receptor Kinetics — Langmuir Binding
 
 Receptor occupancy $\alpha_r$ follows a Langmuir binding ODE:
 
@@ -98,7 +133,7 @@ $$
 **Steady state:**
 
 $$
-\alpha_r^{ss} = \frac{s_r}{s_r + K_d}, \quad K_d = \frac{k_{off}}{k_{on}}
+\alpha_r^{ss} = \frac{k_{on} \cdot s_r}{k_{on} \cdot s_r + k_{off}} = \frac{s_r}{s_r + K_d}, \quad K_d = \frac{k_{off}}{k_{on}}
 $$
 
 **Euler discretization:**
@@ -107,9 +142,11 @@ $$
 \alpha_r(t + dt) = \alpha_r(t) + \left[ k_{on,r} \cdot s_r \cdot (1 - \alpha_r) - k_{off,r} \cdot \alpha_r \right] \cdot dt
 $$
 
+> Note: $\alpha_{ss} < s_r$ due to the Langmuir saturation (unlike the tau or k_on/k_off methods where $\alpha_{ss} = s_r$).
+
 ---
 
-### 2.4 DA Neuromodulation — Parameter Assembly
+### 3.4 DA Neuromodulation — Parameter Assembly
 
 **Effective membrane resistance** (per neuron):
 
@@ -131,7 +168,7 @@ $$
 
 ---
 
-### 2.5 Membrane Time Constant
+### 3.5 Membrane Time Constant
 
 $$
 \tau_m = R_{base} \cdot C_m
@@ -139,14 +176,16 @@ $$
 
 | Neuron type | $C_m$ (pF) | $\tau_m$ (ms) |
 |---|---|---|
-| Excitatory (E) | 250 | 250 (normalized units) |
-| Inhibitory (I) | 50 | 50 (normalized units) |
+| Excitatory (E) | 250 | 25.0 |
+| Inhibitory (I) | 90 | 9.0 |
+
+> Note: The config module defines `TAU_MEM = 20.0 ms` as a reference, but actual $\tau_m$ varies by neuron type via $C_m$.
 
 ---
 
-## 3. Parameter Tables
+## 4. Parameter Tables
 
-### 3.1 Network Architecture Parameters
+### 4.1 Network Architecture Parameters
 
 | Parameter | Symbol | Value | Unit | Description |
 |---|---|---|---|---|
@@ -154,8 +193,8 @@ $$
 | `N_I` | $N_I$ | 200 | — | Number of inhibitory neurons |
 | `N_TOTAL` | $N$ | 1000 | — | Total neurons |
 | `CONN_PROB` | $p$ | 0.20 | — | Connection probability |
-| `W_EXC` | $w_E$ | 0.3 | nA (normalized) | Excitatory synaptic weight |
-| `W_INH` | $w_I$ | −2.0 | nA (normalized) | Inhibitory synaptic weight |
+| `W_EXC` | $w_E$ | 5.0 | pA | Excitatory synaptic weight |
+| `W_INH` | $w_I$ | −25.0 | pA | Inhibitory synaptic weight |
 | `FRAC_E_D1` | — | 0.25 | — | Fraction of E neurons expressing D1R |
 | `FRAC_E_D2` | — | 0.15 | — | Fraction of E neurons expressing D2R |
 | `FRAC_I_D1` | — | 0.30 | — | Fraction of I neurons expressing D1R |
@@ -163,24 +202,26 @@ $$
 
 ---
 
-### 3.2 LIF Neuron Parameters
+### 4.2 LIF Neuron Parameters
 
 | Parameter | Symbol | Value | Unit | Description |
 |---|---|---|---|---|
-| `V_REST` | $V_{rest}$ | 0.0 | mV | Resting membrane potential |
-| `V_RESET` | $V_{reset}$ | −5.0 | mV | Post-spike reset potential |
-| `V_TH` | $V_{th}$ | 20.0 | mV | Spike threshold |
+| `V_REST` | $V_{rest}$ | −70.0 | mV | Resting membrane potential |
+| `V_RESET` | $V_{reset}$ | −75.0 | mV | Post-spike reset potential (hyperpolarized) |
+| `V_TH` | $V_{th}$ | −50.0 | mV | Spike threshold |
 | `R_BASE` | $R_{base}$ | 0.1 | GΩ (= mV/pA = 100 MΩ) | Baseline membrane resistance |
 | `C_E` | $C_E$ | 250.0 | pF | Excitatory membrane capacitance |
-| `C_I` | $C_I$ | 50.0 | pF | Inhibitory membrane capacitance |
+| `C_I` | $C_I$ | 90.0 | pF | Inhibitory membrane capacitance |
 | `TAU_SYN` | $\tau_{syn}$ | 5.0 | ms | Synaptic current decay time constant |
 | `T_REF` | $t_{ref}$ | 5.0 | ms | Absolute refractory period |
-| `BG_MEAN` | $\mu_{bg}$ | 25.0 | pA | Background current mean |
-| `BG_STD` | $\sigma_{bg}$ | 5.0 | pA | Background current std dev |
+| `BG_MEAN` | $\mu_{bg}$ | 190.0 | pA | Background current mean |
+| `BG_STD` | $\sigma_{bg}$ | 25.0 | pA | Background current std dev |
+
+> **Background current calibration:** $V_{ss} = V_{rest} + R_{base} \times BG\_MEAN = -70 + 0.1 \times 190 = -51$ mV $\approx V_{th}$. This places the steady-state just below threshold, enabling noise-driven firing.
 
 ---
 
-### 3.3 Receptor Kinetics Parameters
+### 4.3 Receptor Kinetics Parameters
 
 | Parameter | Symbol | Value | Unit | Description |
 |---|---|---|---|---|
@@ -192,18 +233,22 @@ $$
 | `TAU_ON_D2` | $\tau_{on,D2}$ | 10000.0 | ms | D2 activation rise time constant (~3× faster than D1) |
 | `TAU_OFF_D2` | $\tau_{off,D2}$ | 50000.0 | ms | D2 activation decay time constant (~3× faster than D1) |
 
-Derived rate constants:
+Derived Langmuir rate constants (used in `run_dynamic_d1_d2_kernel`):
 
 | Derived | Formula | Value | Unit |
 |---|---|---|---|
-| $k_{on,D1}$ | $1 / \tau_{on,D1}$ | $\approx 3.24 \times 10^{-5}$ | ms⁻¹ |
-| $k_{off,D1}$ | $1 / \tau_{off,D1}$ | $\approx 6.08 \times 10^{-6}$ | ms⁻¹ |
+| $k_{on,D1}$ | $1 / (\tau_{on,D1} - 3000)$ | $\approx 3.59 \times 10^{-5}$ | ms⁻¹ |
+| $k_{off,D1}$ | $1 / (\tau_{off,D1} + 3000)$ | $\approx 5.97 \times 10^{-6}$ | ms⁻¹ |
 | $k_{on,D2}$ | $1 / \tau_{on,D2}$ | $1.00 \times 10^{-4}$ | ms⁻¹ |
 | $k_{off,D2}$ | $1 / \tau_{off,D2}$ | $2.00 \times 10^{-5}$ | ms⁻¹ |
+| $K_{d,D1}$ | $k_{off,D1} / k_{on,D1}$ | $\approx 0.1664$ | — |
+| $K_{d,D2}$ | $k_{off,D2} / k_{on,D2}$ | $0.2$ | — |
+
+> Note: D1 rate constants have a ±3000 ms offset applied to $\tau$ values before computing $k_{on}$ and $k_{off}$.
 
 ---
 
-### 3.4 DA Modulation Strength Parameters
+### 4.4 DA Modulation Strength Parameters
 
 | Parameter | Symbol | Value | Unit | Effect at $\alpha=1$ |
 |---|---|---|---|---|
@@ -216,47 +261,68 @@ Derived rate constants:
 
 ---
 
-### 3.5 Simulation Control Parameters
+### 4.5 Simulation Control Parameters
 
 | Parameter | Symbol | Default | Unit | Description |
 |---|---|---|---|---|
 | `DT` | $dt$ | 1.0 | ms | Integration time step |
-| `--duration` | $T$ | 100000.0 | ms (= 100 s) | Total simulation duration |
-| `--da` | $[DA]$ | 3.0 | nM | DA concentration during drug window |
-| `DEFAULT_DA_ONSET` | $t_{onset}$ | 5000.0 | ms | DA application onset time |
+| `DEFAULT_DURATION` | — | 2000.0 | ms | Default duration in config |
+| `--duration` (CLI) | $T$ | 100000.0 | ms (= 100 s) | CLI default simulation duration |
+| `--da` (CLI) | $[DA]$ | 3.0 | nM | DA concentration during drug window |
+| `DEFAULT_DA_ONSET` | $t_{onset}$ | 500.0 | ms | DA application onset time |
 | `RANDOM_SEED` | — | 42 | — | Random seed for reproducibility |
 
 ---
 
-## 4. Simulation Flow
+## 5. Simulation Flow
 
 ```
 main.py
-  └─ run_simulation_d1_d2_kinetics()          [runners.py]
-       ├─ Build W matrix (sparse random)
-       ├─ Build mask_d1, mask_d2 vectors
-       └─ run_dynamic_d1_d2_kernel()           [kernels.py, @torch.jit.script]
-            ├─ For each time step t:
-            │    ├─ Compute DA(t)
-            │    ├─ Compute sigmoid target: s_D1, s_D2
-            │    ├─ Update alpha_D1(t) via Langmuir ODE  [k_on=3.24e-5, k_off=6.08e-6 ms⁻¹]
-            │    ├─ Update alpha_D2(t) via Langmuir ODE  [k_on=1e-4,    k_off=2e-5   ms⁻¹]
-            │    ├─ Compute R_eff, I_mod, scale_syn
-            │    ├─ LIF integration
-            │    ├─ Spike detection & reset
-            │    └─ Synaptic propagation: I_syn += W^T · spikes
-            └─ Return spike_records, v_traces
+  └─ run_simulation_d1_d2_kinetics()             [simulation/runners.py]
+       ├─ _init_network()
+       │    ├─ Set random seed (42)
+       │    └─ create_network_structure()          [models/network.py]
+       │         ├─ Build W matrix (sparse random, p=0.20)
+       │         └─ Build mask_d1, mask_d2 vectors
+       ├─ _build_record_indices()
+       └─ run_dynamic_d1_d2_kernel()               [models/kernels.py, @torch.jit.script]
+            ├─ Initialize: V_init (1,N) → expand to (2,N)  [identical across batches]
+            └─ For each time step t:
+                 ├─ Compute DA(t): B0=0, B1=da_level (if t≥onset)
+                 ├─ Update alpha_D1 via Langmuir ODE  (k_on≈3.59e-5, k_off≈5.97e-6)
+                 ├─ Update alpha_D2 via Langmuir ODE  (k_on=1e-4,    k_off=2e-5)
+                 ├─ Assemble: R_eff, I_mod, scale_syn
+                 ├─ Synaptic decay: I_syn *= exp(-dt/τ_syn)
+                 ├─ Background noise: I_bg (1,N) → expand  [shared across batches]
+                 ├─ LIF integration: dV = (leak + I_total) / C_m * dt
+                 ├─ Refractory check
+                 ├─ Spike detection & reset
+                 └─ Synaptic propagation: I_syn += spikes @ W_t
 ```
 
 ---
 
-## 5. D1 vs D2 Receptor Comparison
+## 6. Simulation Modes (4 Kernels)
+
+| Kernel | Description | DA Handling | Used By |
+|---|---|---|---|
+| `run_batch_network` | Static DA | Fixed modulation params | `run_simulation_in_memory` |
+| `run_batch_network_stepped` | Stepped DA | Instantaneous switch at onset | `run_simulation_stepped` |
+| `run_dynamic_d1_kernel` | D1 dynamic + D2 dynamic | D1 & D2 Langmuir ODE | `run_simulation_d1_kinetics` |
+| `run_dynamic_d1_d2_kernel` | D1 + D2 dynamic | Both Langmuir ODE | `run_simulation_d1_d2_kinetics` (**default**) |
+
+---
+
+## 7. D1 vs D2 Receptor Comparison
 
 | Property | D1 Receptor | D2 Receptor |
 |---|---|---|
 | $EC50$ | 4.0 nM | 8.0 nM |
-| $\tau_{on}$ | 30876 ms (~8.6 h) | 10000 ms (~2.8 h) |
-| $\tau_{off}$ | 164472 ms (~45.7 h) | 50000 ms (~13.9 h) |
+| $\tau_{on}$ | 30876 ms (~31 s) | 10000 ms (~10 s) |
+| $\tau_{off}$ | 164472 ms (~164 s) | 50000 ms (~50 s) |
+| $k_{on}$ | ~3.59e-5 ms⁻¹ | 1.0e-4 ms⁻¹ |
+| $k_{off}$ | ~5.97e-6 ms⁻¹ | 2.0e-5 ms⁻¹ |
+| $K_d$ | ~0.166 | 0.2 |
 | Response speed | Slow | ~3× faster than D1 |
 | Effect on $R_{eff}$ | +15% (↑ excitability) | −10% (↓ excitability) |
 | Bias current | +3.0 pA (excitatory) | −3.0 pA (inhibitory) |
@@ -265,10 +331,27 @@ main.py
 
 ---
 
-## 6. Usage
+## 8. Analysis & Output
+
+Each experiment saves to `outputs/exp_<timestamp>/`:
+
+| File | Description |
+|---|---|
+| `config.json` | Experiment parameters |
+| `raw_data.pkl` | Full simulation data (spikes, traces, masks) |
+| `analysis_report.txt` | FFT frequency report + per-group phase analysis |
+| `firing_rates_batch_{0,1}.png` | Population firing rates (6 subgroups) |
+| `firing_rates_E_batch_{0,1}.png` | Excitatory subgroup rates |
+| `firing_rates_I_batch_{0,1}.png` | Inhibitory subgroup rates |
+| `raster_batch_{0,1}.png` | Spike raster plots |
+| `*_zoom_batch_{0,1}.png` | Zoom-in plots (DA onset + 300ms) |
+
+---
+
+## 9. Usage
 
 ```bash
-# Default run (100s, DA=3.0 nM)
+# Default run (100s, DA=3.0 nM, DA onset at 500ms)
 python main.py
 
 # Custom duration and DA concentration
@@ -278,4 +361,8 @@ python main.py --duration 200000 --da 5.0
 python main.py --duration 100000 --da 3.0 --batch 1
 ```
 
-Output is saved to `outputs/exp_<timestamp>/`.
+### Dependencies
+
+- Python 3.8+
+- PyTorch (with CUDA recommended)
+- NumPy, SciPy, Matplotlib, tqdm

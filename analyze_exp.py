@@ -1,8 +1,16 @@
 import pickle
+import sys
 import torch
 import numpy as np
 
-EXP = 'outputs/exp_2026-03-09_21-40-54/raw_data.pkl'
+if len(sys.argv) < 2:
+    print("Usage: python analyze_exp.py <exp_dir_or_pkl_path>")
+    print("  e.g. python analyze_exp.py outputs/exp_2026-03-10_10-40-25")
+    print("       python analyze_exp.py outputs/exp_2026-03-10_10-40-25/raw_data.pkl")
+    sys.exit(1)
+
+_arg = sys.argv[1].rstrip('/')
+EXP = _arg if _arg.endswith('.pkl') else f"{_arg}/raw_data.pkl"
 print(f"Loading {EXP} ...")
 data = pickle.load(open(EXP, 'rb'))
 

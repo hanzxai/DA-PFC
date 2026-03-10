@@ -31,3 +31,9 @@ Thumbs.db
 # --- 临时文件 ---
 tmp/
 *.log
+project_report.txt
+
+# --- 临时分析脚本 ---
+analyze_exp.py
+analyze_quick.py
+analyze_exp_results.py
