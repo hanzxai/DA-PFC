@@ -431,12 +431,15 @@ def run_batch_network(
         I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
         I_total = (I_syn * scale_syn) + I_bg + I_mod
 
-        # 3. LIF 积分: C_m * dV/dt = -(V - V_rest) / R_eff + I_total
+        # 3. LIF exact integration: V_new = V_inf + (V - V_inf) * exp(-dt/tau_m)
+        #    where V_inf = V_rest + R_eff * I_total, tau_m = R_eff * C_m
         R_eff = R_base * mod_R
-        dV = (-(V - V_rest) / R_eff + I_total) / C_m
-        V_new = V + dV * dt
+        V_inf = V_rest + R_eff * I_total
+        tau_m = R_eff * C_m
+        decay_v = torch.exp(-dt / tau_m)
+        V_new = V_inf + (V - V_inf) * decay_v
         is_refractory = (current_time - t_last_spike) <= t_ref
-        V = torch.where(is_refractory, V, V_new)
+        V = torch.where(is_refractory, torch.tensor(V_reset, device=W_t.device), V_new)
 
         # 4. 记录电压
         for k in range(num_record):
@@ -524,12 +527,14 @@ def run_batch_network_stepped(
         I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
         I_total = (I_syn * cur_scale) + I_bg + cur_I_mod
 
-        # LIF 积分: C_m * dV/dt = -(V - V_rest) / R_eff + I_total
+        # LIF exact integration: V_new = V_inf + (V - V_inf) * exp(-dt/tau_m)
         R_eff = R_base * cur_mod_R
-        dV = (-(V - V_rest) / R_eff + I_total) / C_m
-        V_new = V + dV * dt
+        V_inf = V_rest + R_eff * I_total
+        tau_m = R_eff * C_m
+        decay_v = torch.exp(-dt / tau_m)
+        V_new = V_inf + (V - V_inf) * decay_v
         is_refractory = (current_time - t_last_spike) <= t_ref
-        V = torch.where(is_refractory, V, V_new)
+        V = torch.where(is_refractory, torch.tensor(V_reset, device=W_t.device), V_new)
 
         for k in range(num_record):
             v_traces[i, k] = V[record_indices[k, 0], record_indices[k, 1]]
@@ -660,17 +665,20 @@ def run_dynamic_d1_kernel(
         I_mod += (BIAS_D2 * alpha_d2) * mask_d2
         scale_syn -= (LAM_D2 * alpha_d2) * mask_d2
 
-        # F. LIF 积分: C_m * dV/dt = -(V - V_rest) / R_eff + I_total
+        # F. LIF exact integration: V_new = V_inf + (V - V_inf) * exp(-dt/tau_m)
         I_syn = I_syn * decay_factor
         # Share identical noise across batches for consistent baseline
         I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
         I_total = (I_syn * scale_syn) + I_bg + I_mod
 
         R_eff = mod_R  # mod_R 已包含 R_base，直接作为有效膜电阻
-        dV = (-(V - V_rest) / R_eff + I_total) / C_m
-        V_new = V + dV * dt
+        # Exact integration: V_new = V_inf + (V - V_inf) * exp(-dt/tau_m)
+        V_inf = V_rest + R_eff * I_total
+        tau_m = R_eff * C_m
+        decay_v = torch.exp(-dt / tau_m)
+        V_new = V_inf + (V - V_inf) * decay_v
         is_refractory = (current_time - t_last_spike) <= t_ref
-        V = torch.where(is_refractory, V, V_new)
+        V = torch.where(is_refractory, torch.tensor(V_reset, device=W_t.device), V_new)
 
         for k in range(num_record):
             v_traces[i, k] = V[record_indices[k, 0], record_indices[k, 1]]
@@ -794,17 +802,19 @@ def run_dynamic_d1_d2_kernel(
         I_mod += (BIAS_D2 * alpha_d2) * mask_d2
         scale_syn -= (LAM_D2 * alpha_d2) * mask_d2
 
-        # E. LIF 积分: C_m * dV/dt = -(V - V_rest) / R_eff + I_total
+        # E. LIF exact integration: V_new = V_inf + (V - V_inf) * exp(-dt/tau_m)
         I_syn = I_syn * decay_factor
         # Share identical noise across batches for consistent baseline
         I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
         I_total = (I_syn * scale_syn) + I_bg + I_mod
 
         R_eff = mod_R  # mod_R 已包含 R_base，直接作为有效膜电阻
-        dV = (-(V - V_rest) / R_eff + I_total) / C_m
-        V_new = V + dV * dt
+        V_inf = V_rest + R_eff * I_total
+        tau_m = R_eff * C_m
+        decay_v = torch.exp(-dt / tau_m)
+        V_new = V_inf + (V - V_inf) * decay_v
         is_refractory = (current_time - t_last_spike) <= t_ref
-        V = torch.where(is_refractory, V, V_new)
+        V = torch.where(is_refractory, torch.tensor(V_reset, device=W_t.device), V_new)
 
         for k in range(num_record):
             v_traces[i, k] = V[record_indices[k, 0], record_indices[k, 1]]

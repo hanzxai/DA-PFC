@@ -120,6 +120,115 @@ class PFCAnalyzer:
         return centers, gaussian_filter1d(rate, sigma=sigma)
 
     # ------------------------------------------------------------------
+    #  核心计算: 均值发放率统计 (Mean Firing Rate)
+    # ------------------------------------------------------------------
+
+    def compute_mean_firing_rates(self, time_win: float = 5.0) -> dict:
+        """
+        Compute mean firing rates (Hz) for all 8 subgroups,
+        split into Baseline [0, da_onset] and Post-DA [da_onset, duration].
+
+        Returns:
+            dict: {group_name: {batch_id: {'baseline': float, 'post_da': float, 'overall': float}}}
+        """
+        rate_groups = ['E-D1', 'E-D2', 'E-Other', 'All-E',
+                       'I-D1', 'I-D2', 'I-Other', 'All-I']
+        da_onset = self.da_onset
+        dur = self.duration
+        results = {}
+
+        for grp_name in rate_groups:
+            results[grp_name] = {}
+            for batch_id in [0, 1]:
+                centers, rate = self.compute_group_rate(batch_id, grp_name, time_win=time_win)
+                if rate is None or len(rate) == 0:
+                    results[grp_name][batch_id] = {'baseline': 0.0, 'post_da': 0.0, 'overall': 0.0}
+                    continue
+
+                # Overall mean
+                overall_mean = float(np.mean(rate))
+
+                # Baseline phase [0, da_onset]
+                mask_bl = centers < da_onset
+                bl_mean = float(np.mean(rate[mask_bl])) if np.any(mask_bl) else 0.0
+
+                # Post-DA phase [da_onset, duration]
+                mask_pd = centers >= da_onset
+                pd_mean = float(np.mean(rate[mask_pd])) if np.any(mask_pd) else 0.0
+
+                results[grp_name][batch_id] = {
+                    'baseline': bl_mean,
+                    'post_da': pd_mean,
+                    'overall': overall_mean,
+                }
+
+        return results
+
+    def print_mean_rate_report(self, time_win: float = 5.0) -> str:
+        """
+        Print and return a formatted mean firing rate comparison table
+        for Control (B0) vs Exp (B1), split into Baseline and Post-DA phases.
+        Includes per-group CV-ISI (coefficient of variation of inter-spike intervals).
+        """
+        rates = self.compute_mean_firing_rates(time_win=time_win)
+        rate_groups = ['E-D1', 'E-D2', 'E-Other', 'All-E',
+                       'I-D1', 'I-D2', 'I-Other', 'All-I']
+
+        w = 115
+        lines = []
+        lines.append("\n" + "=" * w)
+        lines.append("  📈 Mean Firing Rate Analysis — Control (B0) vs Exp (B1)")
+        lines.append("=" * w)
+        header = (f"  {'Group':<10} │ {'B0 Baseline':>12} {'B0 Post-DA':>12} {'B0 Overall':>12} │"
+                  f" {'B1 Baseline':>12} {'B1 Post-DA':>12} {'B1 Overall':>12} │"
+                  f" {'DA Δ(Hz)':>10}  {'DA Δ(%)':>8}")
+        lines.append(header)
+        lines.append(f"  {'─'*10}─┼─{'─'*12}─{'─'*12}─{'─'*12}─┼─{'─'*12}─{'─'*12}─{'─'*12}─┼─{'─'*10}─{'─'*8}")
+
+        for grp_name in rate_groups:
+            r0 = rates[grp_name][0]
+            r1 = rates[grp_name][1]
+            # DA effect: compare Post-DA Exp vs Post-DA Ctrl
+            da_delta = r1['post_da'] - r0['post_da']
+            da_pct = (da_delta / r0['post_da'] * 100.0) if r0['post_da'] > 0.01 else 0.0
+            line = (f"  {grp_name:<10} │"
+                    f" {r0['baseline']:>11.2f}  {r0['post_da']:>11.2f}  {r0['overall']:>11.2f}  │"
+                    f" {r1['baseline']:>11.2f}  {r1['post_da']:>11.2f}  {r1['overall']:>11.2f}  │"
+                    f" {da_delta:>+10.2f}  {da_pct:>+7.1f}%")
+            lines.append(line)
+            if grp_name == 'All-E':
+                lines.append(f"  {'─'*10}─┼─{'─'*12}─{'─'*12}─{'─'*12}─┼─{'─'*12}─{'─'*12}─{'─'*12}─┼─{'─'*10}─{'─'*8}")
+
+        lines.append("=" * w)
+
+        # Baseline consistency check
+        lines.append("")
+        lines.append("  🔍 Baseline Rate Consistency (B0 vs B1, threshold < 0.5 Hz):")
+        all_ok = True
+        for grp_name in rate_groups:
+            bl_diff = rates[grp_name][1]['baseline'] - rates[grp_name][0]['baseline']
+            if abs(bl_diff) >= 0.5:
+                lines.append(f"     ⚠️  {grp_name:<10}: Diff = {bl_diff:+.2f} Hz")
+                all_ok = False
+        if all_ok:
+            lines.append("     ✅  All groups: Baseline MATCHED (diff < 0.5 Hz)")
+        lines.append("")
+
+        # DA effect summary
+        lines.append("  💊 DA Effect on Mean Rate (Post-DA: Exp - Ctrl):")
+        for grp_name in rate_groups:
+            r0 = rates[grp_name][0]
+            r1 = rates[grp_name][1]
+            da_delta = r1['post_da'] - r0['post_da']
+            arrow = "↑" if da_delta > 0.1 else "↓" if da_delta < -0.1 else "→"
+            lines.append(f"     {grp_name:<10}: {r0['post_da']:>8.2f} → {r1['post_da']:>8.2f} Hz  ({da_delta:+.2f} Hz {arrow})")
+        lines.append("=" * w)
+
+        text = "\n".join(lines)
+        print(text)
+        return text
+
+    # ------------------------------------------------------------------
     #  核心计算: FFT 频率分析
     # ------------------------------------------------------------------
 
@@ -286,7 +395,10 @@ class PFCAnalyzer:
         sections.append(f"  N_E: {self.N_E} | N_I: {self.N_I} | N_total: {self.N}")
         sections.append("=" * 100)
 
-        # FFT comparison table — put overview FIRST for quick reading
+        # Mean firing rate analysis — most important metric, put FIRST
+        sections.append(self.print_mean_rate_report(time_win=time_win))
+
+        # FFT comparison table
         sections.append(self.print_fft_comparison_report(time_win=time_win))
 
         # Per-group frequency reports (detailed)

@@ -72,7 +72,25 @@ def main():
     # 5. 分析与绘图
     print("🎨 Generating Plots...")
     t_plot_start = time.time()
+    import numpy as np
     analyzer = PFCAnalyzer(data)
+
+    # Pre-compute unified zoom y-axis limit across ALL batches and ALL subgroups
+    # so that batch_0 and batch_1 zoom plots share the same y scale
+    _t_start, _t_end = 9500.0, 13000.0
+    _zoom_ymax = 0.0
+    for _bid in [0, 1]:
+        for _grp in ['E-D1', 'E-D2', 'E-Other', 'I-D1', 'I-D2', 'I-Other']:
+            if _grp not in analyzer.groups:
+                continue
+            _centers, _rate = analyzer.compute_group_rate(_bid, _grp, time_win=5.0)
+            if _rate is None or len(_rate) == 0:
+                continue
+            _mask = (_centers >= _t_start) & (_centers <= _t_end)
+            if np.any(_mask):
+                _zoom_ymax = max(_zoom_ymax, float(np.nanmax(_rate[_mask])))
+    _zoom_ylim = _zoom_ymax * 1.15 if _zoom_ymax > 0 else None
+
     # 同时绘制 Batch 0 (Control) 和 Batch 1 (Exp) 的图
     for batch_id in [0, 1]:
         print(f"\n--- Batch {batch_id} ({'Control' if batch_id == 0 else 'Exp'}) ---")
@@ -80,10 +98,10 @@ def main():
         plot_excitatory_rates(analyzer, save_dir=save_dir, batch_idx=batch_id)
         plot_inhibitory_rates(analyzer, save_dir=save_dir, batch_idx=batch_id)
         plot_raster_figure(analyzer, save_dir=save_dir, batch_idx=batch_id)
-        # Short time-scale zoom-in plots (DA onset + 300 ms)
-        plot_population_rates_zoom(analyzer, save_dir=save_dir, batch_idx=batch_id)
-        plot_excitatory_rates_zoom(analyzer, save_dir=save_dir, batch_idx=batch_id)
-        plot_inhibitory_rates_zoom(analyzer, save_dir=save_dir, batch_idx=batch_id)
+        # Short time-scale zoom-in plots — use shared ylim for cross-batch consistency
+        plot_population_rates_zoom(analyzer, save_dir=save_dir, batch_idx=batch_id, ylim=_zoom_ylim)
+        plot_excitatory_rates_zoom(analyzer, save_dir=save_dir, batch_idx=batch_id, ylim=_zoom_ylim)
+        plot_inhibitory_rates_zoom(analyzer, save_dir=save_dir, batch_idx=batch_id, ylim=_zoom_ylim)
         plot_raster_figure_zoom(analyzer, save_dir=save_dir, batch_idx=batch_id)
 
     # Frequency analysis reports — save to file

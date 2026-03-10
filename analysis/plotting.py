@@ -69,17 +69,17 @@ def plot_population_rates(analyzer: PFCAnalyzer, save_dir=None,
         return
 
     # 美化
-    ax.set_xlabel(x_label, fontsize=12)
-    ax.set_ylabel("Firing Rate (Hz)", fontsize=12)
+    ax.set_xlabel(x_label, fontsize=15)
+    ax.set_ylabel("Firing Rate (Hz)", fontsize=15)
     batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
-    ax.set_title(f"Population Activities — {batch_label}", fontsize=14)
+    ax.set_title(f"Population Activities — {batch_label}", fontsize=17)
     ax.grid(True, linestyle='--', alpha=0.3)
-    ax.legend(loc='upper left', fontsize=10)
+    ax.legend(loc='upper left', fontsize=13)
 
     # DA Onset 竖线
     if onset_line > 0:
         ax.axvline(onset_line, color='black', linestyle='--', alpha=0.6)
-        ax.text(onset_line, ax.get_ylim()[1] * 0.95, " DA Onset", fontsize=10, va='top')
+        ax.text(onset_line, ax.get_ylim()[1] * 0.95, " DA Onset", fontsize=13, va='top')
 
     # 保存或显示
     if save_dir:
@@ -177,25 +177,25 @@ def plot_raster_figure(analyzer: PFCAnalyzer, save_dir=None,
     ax.axhline(analyzer.N_E - 0.5, color='gray', linestyle='-',
                linewidth=1.0, alpha=0.6)
     ax.text(x_max * 0.01, analyzer.N_E - 0.5 + 5,
-            "← I neurons", fontsize=9, color='gray', va='bottom')
+            "← I neurons", fontsize=12, color='gray', va='bottom')
     ax.text(x_max * 0.01, analyzer.N_E - 0.5 - 5,
-            "E neurons →", fontsize=9, color='gray', va='top')
+            "E neurons →", fontsize=12, color='gray', va='top')
 
     # --- DA Onset 竖线 ---
     if onset_line > 0 and batch_idx == 1:
         ax.axvline(onset_line, color='black', linestyle='--', linewidth=1.5, alpha=0.8)
         ax.text(onset_line, analyzer.N * 0.98,
-                " DA Onset", fontsize=10, va='top', ha='left', color='black')
+                " DA Onset", fontsize=13, va='top', ha='left', color='black')
 
     # --- 美化 ---
     ax.set_xlim(0, x_max)
     ax.set_ylim(-1, analyzer.N)
-    ax.set_xlabel(x_label, fontsize=13)
-    ax.set_ylabel("Neuron ID", fontsize=13)
+    ax.set_xlabel(x_label, fontsize=16)
+    ax.set_ylabel("Neuron ID", fontsize=16)
     batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
-    ax.set_title(f"Raster Plot — {batch_label}  (all {analyzer.N} neurons)", fontsize=14)
+    ax.set_title(f"Raster Plot — {batch_label}  (all {analyzer.N} neurons)", fontsize=17)
     ax.grid(True, axis='x', linestyle='--', alpha=0.2)
-    legend = ax.legend(loc='upper right', fontsize=9,
+    legend = ax.legend(loc='upper right', fontsize=12,
                        markerscale=4, framealpha=0.85)
     for handle in legend.legend_handles:
         handle.set_alpha(1.0)
@@ -254,16 +254,16 @@ def _plot_group_rates(analyzer: PFCAnalyzer, group_names: list, title_prefix: st
         plt.close(fig)
         return
 
-    ax.set_xlabel(x_label, fontsize=12)
-    ax.set_ylabel("Firing Rate (Hz)", fontsize=12)
+    ax.set_xlabel(x_label, fontsize=15)
+    ax.set_ylabel("Firing Rate (Hz)", fontsize=15)
     batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
-    ax.set_title(f"{title_prefix} Population Activities — {batch_label}", fontsize=14)
+    ax.set_title(f"{title_prefix} Population Activities — {batch_label}", fontsize=17)
     ax.grid(True, linestyle='--', alpha=0.3)
-    ax.legend(loc='upper left', fontsize=10)
+    ax.legend(loc='upper left', fontsize=13)
 
     if onset_line > 0:
         ax.axvline(onset_line, color='black', linestyle='--', alpha=0.6)
-        ax.text(onset_line, ax.get_ylim()[1] * 0.95, " DA Onset", fontsize=10, va='top')
+        ax.text(onset_line, ax.get_ylim()[1] * 0.95, " DA Onset", fontsize=13, va='top')
 
     if save_dir:
         save_path = save_dir / filename
@@ -314,7 +314,8 @@ def plot_inhibitory_rates(analyzer: PFCAnalyzer, save_dir=None,
 
 def _plot_group_rates_zoom(analyzer: PFCAnalyzer, group_names: list, title_prefix: str,
                            save_dir=None, batch_idx: int = 1, time_win: float = 5.0,
-                           zoom_window: float = 300.0, filename: str = "rates_zoom.png"):
+                           zoom_window: float = 300.0, filename: str = "rates_zoom.png",
+                           ylim=None):
     """
     Internal helper: plot firing rates zoomed into [DA_onset, DA_onset + zoom_window] ms.
 
@@ -329,8 +330,8 @@ def _plot_group_rates_zoom(analyzer: PFCAnalyzer, group_names: list, title_prefi
         filename:      output filename
     """
     da_onset = analyzer.da_onset
-    t_start = da_onset
-    t_end = da_onset + zoom_window
+    t_start = 9500.0
+    t_end = 13000.0
 
     print(f"🔬 Plotting {title_prefix} zoom [{t_start:.0f}, {t_end:.0f}] ms for Batch {batch_idx}...")
 
@@ -351,7 +352,7 @@ def _plot_group_rates_zoom(analyzer: PFCAnalyzer, group_names: list, title_prefi
         if not np.any(mask):
             continue
 
-        x_data = centers[mask] - da_onset   # relative to DA onset (ms)
+        x_data = centers[mask]   # absolute time (ms)
         y_data = rate[mask]
 
         color = PFCAnalyzer.COLORS.get(grp_name, 'k')
@@ -363,17 +364,25 @@ def _plot_group_rates_zoom(analyzer: PFCAnalyzer, group_names: list, title_prefi
         plt.close(fig)
         return
 
-    ax.set_xlim(0, zoom_window)
-    ax.set_xlabel("Time after DA onset (ms)", fontsize=12)
-    ax.set_ylabel("Firing Rate (Hz)", fontsize=12)
+    ax.set_xlim(t_start, t_end)
+    # Unified y-axis: use provided ylim or auto-compute from data
+    if ylim is not None:
+        ax.set_ylim(0, ylim)
+    else:
+        all_lines = ax.get_lines()
+        if all_lines:
+            y_max = max(np.nanmax(l.get_ydata()) for l in all_lines if len(l.get_ydata()) > 0)
+            ax.set_ylim(0, y_max * 1.15)
+    ax.set_xlabel("Time (ms)", fontsize=15)
+    ax.set_ylabel("Firing Rate (Hz)", fontsize=15)
     batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
-    ax.set_title(f"{title_prefix} — {batch_label}  [DA onset +{zoom_window:.0f} ms]", fontsize=14)
+    ax.set_title(f"{title_prefix} — {batch_label}  [{t_start:.0f}–{t_end:.0f} ms]", fontsize=17)
     ax.grid(True, linestyle='--', alpha=0.3)
-    ax.legend(loc='upper left', fontsize=10)
+    ax.legend(loc='upper left', fontsize=13)
 
-    # DA Onset vertical line at x=0
-    ax.axvline(0, color='black', linestyle='--', alpha=0.6)
-    ax.text(0, ax.get_ylim()[1] * 0.95, " DA Onset", fontsize=10, va='top')
+    # DA Onset vertical line
+    ax.axvline(da_onset, color='black', linestyle='--', alpha=0.6)
+    ax.text(da_onset, ax.get_ylim()[1] * 0.95, " DA Onset", fontsize=13, va='top')
 
     if save_dir:
         save_path = save_dir / filename
@@ -386,7 +395,7 @@ def _plot_group_rates_zoom(analyzer: PFCAnalyzer, group_names: list, title_prefi
 
 def plot_population_rates_zoom(analyzer: PFCAnalyzer, save_dir=None,
                                batch_idx: int = 1, time_win: float = 5.0,
-                               zoom_window: float = 300.0):
+                               zoom_window: float = 300.0, ylim=None):
     """
     Plot all 6 subgroup firing rates zoomed into [DA onset, DA onset + zoom_window] ms.
     Output file: firing_rates_zoom_batch_{batch_idx}.png
@@ -394,8 +403,8 @@ def plot_population_rates_zoom(analyzer: PFCAnalyzer, save_dir=None,
     print(f"🔬 Plotting all-population zoom firing rates for Batch {batch_idx}...")
 
     da_onset = analyzer.da_onset
-    t_start = da_onset
-    t_end = da_onset + zoom_window
+    t_start = 9500.0
+    t_end = 13000.0
 
     fig, ax = plt.subplots(figsize=(14, 7), dpi=150)
     target_groups = ['E-D1', 'E-D2', 'E-Other', 'I-D1', 'I-D2', 'I-Other']
@@ -417,7 +426,7 @@ def plot_population_rates_zoom(analyzer: PFCAnalyzer, save_dir=None,
         if not np.any(mask):
             continue
 
-        x_data = centers[mask] - da_onset
+        x_data = centers[mask]   # absolute time (ms)
         y_data = rate[mask]
 
         color = PFCAnalyzer.COLORS.get(grp_name, 'k')
@@ -433,16 +442,24 @@ def plot_population_rates_zoom(analyzer: PFCAnalyzer, save_dir=None,
         plt.close(fig)
         return
 
-    ax.set_xlim(0, zoom_window)
-    ax.set_xlabel("Time after DA onset (ms)", fontsize=12)
-    ax.set_ylabel("Firing Rate (Hz)", fontsize=12)
+    ax.set_xlim(t_start, t_end)
+    # Unified y-axis: use provided ylim or auto-compute from data
+    if ylim is not None:
+        ax.set_ylim(0, ylim)
+    else:
+        all_lines = ax.get_lines()
+        if all_lines:
+            y_max = max(np.nanmax(l.get_ydata()) for l in all_lines if len(l.get_ydata()) > 0)
+            ax.set_ylim(0, y_max * 1.15)
+    ax.set_xlabel("Time (ms)", fontsize=15)
+    ax.set_ylabel("Firing Rate (Hz)", fontsize=15)
     batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
-    ax.set_title(f"Population Activities — {batch_label}  [DA onset +{zoom_window:.0f} ms]", fontsize=14)
+    ax.set_title(f"Population Activities — {batch_label}  [{t_start:.0f}–{t_end:.0f} ms]", fontsize=17)
     ax.grid(True, linestyle='--', alpha=0.3)
-    ax.legend(loc='upper left', fontsize=10)
+    ax.legend(loc='upper left', fontsize=13)
 
-    ax.axvline(0, color='black', linestyle='--', alpha=0.6)
-    ax.text(0, ax.get_ylim()[1] * 0.95, " DA Onset", fontsize=10, va='top')
+    ax.axvline(da_onset, color='black', linestyle='--', alpha=0.6)
+    ax.text(da_onset, ax.get_ylim()[1] * 0.95, " DA Onset", fontsize=13, va='top')
 
     if save_dir:
         save_path = save_dir / f"firing_rates_zoom_batch_{batch_idx}.png"
@@ -455,7 +472,7 @@ def plot_population_rates_zoom(analyzer: PFCAnalyzer, save_dir=None,
 
 def plot_excitatory_rates_zoom(analyzer: PFCAnalyzer, save_dir=None,
                                batch_idx: int = 1, time_win: float = 5.0,
-                               zoom_window: float = 300.0):
+                               zoom_window: float = 300.0, ylim=None):
     """
     Plot E subgroups zoomed into [DA onset, DA onset + zoom_window] ms.
     Output file: firing_rates_E_zoom_batch_{batch_idx}.png
@@ -469,12 +486,13 @@ def plot_excitatory_rates_zoom(analyzer: PFCAnalyzer, save_dir=None,
         time_win=time_win,
         zoom_window=zoom_window,
         filename=f"firing_rates_E_zoom_batch_{batch_idx}.png",
+        ylim=ylim,
     )
 
 
 def plot_inhibitory_rates_zoom(analyzer: PFCAnalyzer, save_dir=None,
                                batch_idx: int = 1, time_win: float = 5.0,
-                               zoom_window: float = 300.0):
+                               zoom_window: float = 300.0, ylim=None):
     """
     Plot I subgroups zoomed into [DA onset, DA onset + zoom_window] ms.
     Output file: firing_rates_I_zoom_batch_{batch_idx}.png
@@ -488,6 +506,7 @@ def plot_inhibitory_rates_zoom(analyzer: PFCAnalyzer, save_dir=None,
         time_win=time_win,
         zoom_window=zoom_window,
         filename=f"firing_rates_I_zoom_batch_{batch_idx}.png",
+        ylim=ylim,
     )
 
 
@@ -510,8 +529,8 @@ def plot_raster_figure_zoom(analyzer: PFCAnalyzer, save_dir=None,
         target_groups = ['E-D1', 'E-D2', 'E-Other', 'I-D1', 'I-D2', 'I-Other']
 
     da_onset = analyzer.da_onset
-    t_start = da_onset
-    t_end = da_onset + zoom_window
+    t_start = 9500.0
+    t_end = 13000.0
 
     print(f"🔬 Plotting raster zoom [{t_start:.0f}, {t_end:.0f}] ms for Batch {batch_idx}...")
 
@@ -536,7 +555,7 @@ def plot_raster_figure_zoom(analyzer: PFCAnalyzer, save_dir=None,
         print("❌ No spikes in zoom window.")
         return
 
-    x_data = ts_ms - da_onset   # relative to DA onset
+    x_data = ts_ms   # absolute time (ms)
 
     # --- Plot ---
     fig, ax = plt.subplots(figsize=(16, 9), dpi=150)
@@ -569,26 +588,26 @@ def plot_raster_figure_zoom(analyzer: PFCAnalyzer, save_dir=None,
     # --- E/I boundary ---
     ax.axhline(analyzer.N_E - 0.5, color='gray', linestyle='-',
                linewidth=1.0, alpha=0.6)
-    ax.text(zoom_window * 0.01, analyzer.N_E - 0.5 + 5,
-            "← I neurons", fontsize=9, color='gray', va='bottom')
-    ax.text(zoom_window * 0.01, analyzer.N_E - 0.5 - 5,
-            "E neurons →", fontsize=9, color='gray', va='top')
+    ax.text(t_start + (t_end - t_start) * 0.01, analyzer.N_E - 0.5 + 5,
+            "← I neurons", fontsize=12, color='gray', va='bottom')
+    ax.text(t_start + (t_end - t_start) * 0.01, analyzer.N_E - 0.5 - 5,
+            "E neurons →", fontsize=12, color='gray', va='top')
 
-    # --- DA Onset line at x=0 ---
+    # --- DA Onset line ---
     if batch_idx == 1:
-        ax.axvline(0, color='black', linestyle='--', linewidth=1.5, alpha=0.8)
-        ax.text(0, analyzer.N * 0.98,
-                " DA Onset", fontsize=10, va='top', ha='left', color='black')
+        ax.axvline(da_onset, color='black', linestyle='--', linewidth=1.5, alpha=0.8)
+        ax.text(da_onset, analyzer.N * 0.98,
+                " DA Onset", fontsize=13, va='top', ha='left', color='black')
 
     # --- Beautify ---
-    ax.set_xlim(0, zoom_window)
+    ax.set_xlim(t_start, t_end)
     ax.set_ylim(-1, analyzer.N)
-    ax.set_xlabel("Time after DA onset (ms)", fontsize=13)
-    ax.set_ylabel("Neuron ID", fontsize=13)
+    ax.set_xlabel("Time (ms)", fontsize=16)
+    ax.set_ylabel("Neuron ID", fontsize=16)
     batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
-    ax.set_title(f"Raster Plot — {batch_label}  [DA onset +{zoom_window:.0f} ms]", fontsize=14)
+    ax.set_title(f"Raster Plot — {batch_label}  [{t_start:.0f}–{t_end:.0f} ms]", fontsize=17)
     ax.grid(True, axis='x', linestyle='--', alpha=0.2)
-    legend = ax.legend(loc='upper right', fontsize=9,
+    legend = ax.legend(loc='upper right', fontsize=12,
                        markerscale=4, framealpha=0.85)
     for handle in legend.legend_handles:
         handle.set_alpha(1.0)
