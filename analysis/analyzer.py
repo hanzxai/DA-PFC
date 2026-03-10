@@ -20,6 +20,8 @@ class PFCAnalyzer:
         'I-D1': '#ff7f0e',   # Orange
         'I-D2': '#9467bd',   # Purple
         'I-Other': '#2ca02c', # Green
+        'All-E': '#e377c2',  # Pink
+        'All-I': '#17becf',  # Cyan
     }
 
     def __init__(self, data_source: dict):
@@ -62,6 +64,8 @@ class PFCAnalyzer:
             'I-D1':    is_inh & m_d1,
             'I-D2':    is_inh & m_d2,
             'I-Other': is_inh & (~m_d1) & (~m_d2),
+            'All-E':   is_exc,
+            'All-I':   is_inh,
         }
 
     def _get_spikes_for_batch(self, batch_idx: int) -> np.ndarray:
@@ -131,7 +135,8 @@ class PFCAnalyzer:
 
         sig = segment - np.mean(segment)
         fs = 1000.0 / time_win
-        freqs, power = welch(sig, fs=fs, nperseg=len(sig), nfft=4096)
+        nfft = max(4096, len(sig))
+        freqs, power = welch(sig, fs=fs, nperseg=len(sig), nfft=nfft)
 
         mask_roi = freqs > 1.0
         if np.any(mask_roi):
@@ -142,12 +147,12 @@ class PFCAnalyzer:
     #  高级分析: 频率报告
     # ------------------------------------------------------------------
 
-    def print_frequency_report(self, target_group: str = 'E-D1', time_win: float = 5.0):
-        """打印 Control vs Experiment 的分阶段频率对比报告。"""
+    def print_frequency_report(self, target_group: str = 'E-D1', time_win: float = 5.0) -> str:
+        """打印并返回 Control vs Experiment 的分阶段频率对比报告。"""
         _, r_ctrl = self.compute_group_rate(0, target_group, time_win)
         _, r_exp = self.compute_group_rate(1, target_group, time_win)
         if r_ctrl is None or r_exp is None:
-            return
+            return ""
 
         onset = int(self.da_onset)
         dur = int(self.duration)
@@ -160,18 +165,143 @@ class PFCAnalyzer:
         if dur > onset + 1000:
             phases.append(("Late DA", onset + 1000, dur))
 
-        print("\n" + "=" * 50)
-        print(f" 📊 频率分析报告 (Target: {target_group})")
-        print("=" * 50)
-        print(f"{'Phase':<12} | {'Time (ms)':<15} | {'Ctrl (Hz)':<10} | {'Exp (Hz)':<10} | {'Diff':<10}")
-        print("-" * 68)
+        lines = []
+        lines.append("\n" + "=" * 50)
+        lines.append(f" 📊 频率分析报告 (Target: {target_group})")
+        lines.append("=" * 50)
+        lines.append(f"{'Phase':<12} | {'Time (ms)':<15} | {'Ctrl (Hz)':<10} | {'Exp (Hz)':<10} | {'Diff':<10}")
+        lines.append("-" * 68)
 
         for name, start, end in phases:
             f_ctrl = self.calculate_frequency_in_window(r_ctrl, time_win, start, end)
             f_exp = self.calculate_frequency_in_window(r_exp, time_win, start, end)
-            print(f"{name:<12} | {f'{start}-{end}':<15} | {f_ctrl:<10.2f} | {f_exp:<10.2f} | {f_exp - f_ctrl:+.2f}")
+            diff = f_exp - f_ctrl
+            # Mark baseline consistency check
+            if name == "Baseline":
+                status = " ✅" if abs(diff) < 0.5 else " ⚠️ MISMATCH"
+            else:
+                status = ""
+            lines.append(f"{name:<12} | {f'{start}-{end}':<15} | {f_ctrl:<10.2f} | {f_exp:<10.2f} | {diff:+.2f}{status}")
 
-        print("=" * 50 + "\n")
+        lines.append("=" * 50 + "\n")
+
+        text = "\n".join(lines)
+        print(text)
+        return text
+
+    def print_fft_comparison_report(self, time_win: float = 5.0) -> str:
+        """Print and return a side-by-side FFT frequency comparison table for Control (B0) vs Exp (B1).
+
+        Analyses 8 groups: E-D1, E-D2, E-Other, All-E, I-D1, I-D2, I-Other, All-I.
+        Each group is split into Baseline [0, da_onset] and Post-DA [da_onset, duration].
+        """
+        fft_groups = ['E-D1', 'E-D2', 'E-Other', 'All-E',
+                      'I-D1', 'I-D2', 'I-Other', 'All-I']
+        da_onset = self.da_onset
+        dur = self.duration
+
+        # Collect FFT results: {group: {batch: {phase: freq}}}
+        fft_results = {}
+        for grp_name in fft_groups:
+            fft_results[grp_name] = {}
+            for batch_id in [0, 1]:
+                centers, rate = self.compute_group_rate(batch_id, grp_name, time_win=time_win)
+                if rate is None or len(rate) == 0:
+                    fft_results[grp_name][batch_id] = {'baseline': 0.0, 'post_da': 0.0}
+                    continue
+                freq_bl = self.calculate_frequency_in_window(rate, time_win, 0.0, da_onset)
+                freq_pd = self.calculate_frequency_in_window(rate, time_win, da_onset, dur)
+                fft_results[grp_name][batch_id] = {'baseline': freq_bl, 'post_da': freq_pd}
+
+        # Build table lines
+        w = 100
+        lines = []
+        lines.append("\n" + "=" * w)
+        lines.append("  📐 FFT Frequency Analysis — Control (B0) vs Exp (B1)")
+        lines.append("=" * w)
+        header = (f"  {'Group':<10} │ {'B0 Baseline':>12} {'B0 Post-DA':>12} │"
+                  f" {'B1 Baseline':>12} {'B1 Post-DA':>12} │"
+                  f" {'BL Diff':>10}  {'Status':>6}")
+        lines.append(header)
+        lines.append(f"  {'─'*10}─┼─{'─'*12}─{'─'*12}─┼─{'─'*12}─{'─'*12}─┼─{'─'*12}─{'─'*6}")
+        for grp_name in fft_groups:
+            r0 = fft_results[grp_name][0]
+            r1 = fft_results[grp_name][1]
+            bl_diff = r1['baseline'] - r0['baseline']
+            bl_status = "✅" if abs(bl_diff) < 0.5 else "⚠️"
+            line = (f"  {grp_name:<10} │ {r0['baseline']:>11.2f}  {r0['post_da']:>11.2f}  │"
+                    f" {r1['baseline']:>11.2f}  {r1['post_da']:>11.2f}  │"
+                    f" {bl_diff:>+10.2f}  {bl_status:>6}")
+            lines.append(line)
+            # Print a separator after All-E to visually split E and I groups
+            if grp_name == 'All-E':
+                lines.append(f"  {'─'*10}─┼─{'─'*12}─{'─'*12}─┼─{'─'*12}─{'─'*12}─┼─{'─'*12}─{'─'*6}")
+        lines.append("=" * w)
+
+        # Summary: Baseline Consistency Check
+        lines.append("")
+        lines.append("  🔍 Baseline Consistency Check (B0 vs B1, threshold < 0.5 Hz):")
+        all_ok = True
+        for grp_name in fft_groups:
+            bl_diff = fft_results[grp_name][1]['baseline'] - fft_results[grp_name][0]['baseline']
+            if abs(bl_diff) >= 0.5:
+                lines.append(f"     ⚠️  {grp_name:<10}: Diff = {bl_diff:+.2f} Hz")
+                all_ok = False
+        if all_ok:
+            lines.append("     ✅  All groups: Baseline MATCHED (diff < 0.5 Hz)")
+        lines.append("")
+
+        # DA Effect Summary
+        lines.append("  💊 DA Effect Summary (Post-DA: Exp - Ctrl):")
+        for grp_name in fft_groups:
+            r0 = fft_results[grp_name][0]
+            r1 = fft_results[grp_name][1]
+            da_effect = r1['post_da'] - r0['post_da']
+            arrow = "↑" if da_effect > 0 else "↓" if da_effect < 0 else "→"
+            lines.append(f"     {grp_name:<10}: {r0['post_da']:>8.2f} → {r1['post_da']:>8.2f}  ({da_effect:+.2f} Hz {arrow})")
+        lines.append("=" * w)
+
+        text = "\n".join(lines)
+        print(text)
+        return text
+
+    def save_report(self, filepath: str, time_win: float = 5.0):
+        """Generate all analysis reports and save to a text file.
+
+        Includes:
+        - FFT comparison table (overview first for quick reading)
+        - Per-group frequency reports for all 8 groups
+        """
+        import os
+        from datetime import datetime
+        report_groups = ['E-D1', 'E-D2', 'E-Other', 'All-E',
+                         'I-D1', 'I-D2', 'I-Other', 'All-I']
+        sections = []
+
+        # Header with experiment metadata
+        sections.append("=" * 100)
+        sections.append(f"  📋 PFC Network Simulation — Analysis Report")
+        sections.append(f"  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        sections.append(f"  Duration: {self.duration:.0f} ms | DA Onset: {self.da_onset:.0f} ms | DA Level: {self.da_level} nM")
+        sections.append(f"  N_E: {self.N_E} | N_I: {self.N_I} | N_total: {self.N}")
+        sections.append("=" * 100)
+
+        # FFT comparison table — put overview FIRST for quick reading
+        sections.append(self.print_fft_comparison_report(time_win=time_win))
+
+        # Per-group frequency reports (detailed)
+        sections.append("\n" + "~" * 100)
+        sections.append("  📊 Detailed Per-Group Phase Analysis")
+        sections.append("~" * 100)
+        for grp in report_groups:
+            text = self.print_frequency_report(target_group=grp, time_win=time_win)
+            if text:
+                sections.append(text)
+
+        os.makedirs(os.path.dirname(filepath) or '.', exist_ok=True)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write("\n".join(sections))
+        print(f"\n📄 Report saved to: {filepath}")
 
     # ------------------------------------------------------------------
     #  绘图: Raster

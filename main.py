@@ -10,7 +10,10 @@ import time
 import config
 from simulation.runners import run_simulation_d1_d2_kinetics
 from analysis.analyzer import PFCAnalyzer
-from analysis.plotting import plot_population_rates, plot_raster_figure, plot_excitatory_rates, plot_inhibitory_rates
+from analysis.plotting import (plot_population_rates, plot_raster_figure,
+                                plot_excitatory_rates, plot_inhibitory_rates,
+                                plot_population_rates_zoom, plot_excitatory_rates_zoom,
+                                plot_inhibitory_rates_zoom, plot_raster_figure_zoom)
 from utils import setup_experiment_folder, save_args, save_raw_data
 
 
@@ -77,6 +80,16 @@ def main():
         plot_excitatory_rates(analyzer, save_dir=save_dir, batch_idx=batch_id)
         plot_inhibitory_rates(analyzer, save_dir=save_dir, batch_idx=batch_id)
         plot_raster_figure(analyzer, save_dir=save_dir, batch_idx=batch_id)
+        # Short time-scale zoom-in plots (DA onset + 300 ms)
+        plot_population_rates_zoom(analyzer, save_dir=save_dir, batch_idx=batch_id)
+        plot_excitatory_rates_zoom(analyzer, save_dir=save_dir, batch_idx=batch_id)
+        plot_inhibitory_rates_zoom(analyzer, save_dir=save_dir, batch_idx=batch_id)
+        plot_raster_figure_zoom(analyzer, save_dir=save_dir, batch_idx=batch_id)
+
+    # Frequency analysis reports — save to file
+    import os
+    analyzer.save_report(os.path.join(save_dir, "analysis_report.txt"))
+
     t_plot_elapsed = time.time() - t_plot_start
 
     # 6. 总计时报告

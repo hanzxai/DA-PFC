@@ -397,15 +397,17 @@ def run_batch_network(
     # --- LIF 参数 (与 config.py 一致) ---
     V_rest, V_reset, V_th = -70.0, -75.0, -50.0
     R_base, t_ref, tau_syn = 0.1, 5.0, 5.0
-    bg_mean, bg_std = 190.0, 25.0  # V_ss=-51mV, σ_V=R_base*bg_std=0.1*25=2.5mV, drives spontaneous firing
-    C_E, C_I = 250.0, 50.0  # membrane capacitance (pF): E=250, I=50
+    bg_mean, bg_std = 190.0, 25.0  # V_ss=-51mV, near threshold, noise-driven firing
+    C_E, C_I = 250.0, 90.0  # membrane capacitance (pF): E=250, I=90
 
-    # --- C_m 向量: (1, N), E 神经元=250, I 神经元=50 ---
+    # --- C_m 向量: (1, N), E 神经元=250, I 神经元=90 ---
     C_m = torch.full((1, N), C_I, device=W_t.device)
     C_m[0, :n_exc] = C_E
 
     # --- 状态变量 ---
-    V = torch.rand((batch_size, N), device=W_t.device) * (V_th - V_reset) + V_reset
+    # Share identical initial V across batches so baseline is consistent
+    V_init = torch.rand((1, N), device=W_t.device) * (V_th - V_reset) + V_reset
+    V = V_init.expand(batch_size, -1).clone()
     t_last_spike = torch.full((batch_size, N), -1000.0, device=W_t.device)
     I_syn = torch.zeros((batch_size, N), device=W_t.device)
 
@@ -425,8 +427,8 @@ def run_batch_network(
         # 1. 突触电流衰减
         I_syn = I_syn * decay_factor
 
-        # 2. 总电流
-        I_bg = torch.randn((batch_size, N), device=W_t.device) * bg_std + bg_mean
+        # 2. 总电流 — share identical noise across batches for consistent baseline
+        I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
         I_total = (I_syn * scale_syn) + I_bg + I_mod
 
         # 3. LIF 积分: C_m * dV/dt = -(V - V_rest) / R_eff + I_total
@@ -481,15 +483,17 @@ def run_batch_network_stepped(
     # --- LIF 参数 ---
     V_rest, V_reset, V_th = -70.0, -75.0, -50.0
     R_base, t_ref, tau_syn = 0.1, 5.0, 5.0  # R_base unit: GΩ (= mV/pA)
-    bg_mean, bg_std = 190.0, 25.0  # V_ss=-51mV, σ_V=R_base*bg_std=0.1*25=2.5mV, drives spontaneous firing
-    C_E, C_I = 250.0, 50.0  # membrane capacitance (pF): E=250, I=50
+    bg_mean, bg_std = 190.0, 25.0  # V_ss=-51mV, near threshold, noise-driven firing
+    C_E, C_I = 250.0, 90.0  # membrane capacitance (pF): E=250, I=90
 
-    # --- C_m 向量: (1, N), E 神经元=250, I 神经元=50 ---
+    # --- C_m 向量: (1, N), E 神经元=250, I 神经元=90 ---
     C_m = torch.full((1, N), C_I, device=W_t.device)
     C_m[0, :n_exc] = C_E
 
     # --- 状态变量 ---
-    V = torch.rand((batch_size, N), device=W_t.device) * (V_th - V_reset) + V_reset
+    # Share identical initial V across batches so baseline is consistent
+    V_init = torch.rand((1, N), device=W_t.device) * (V_th - V_reset) + V_reset
+    V = V_init.expand(batch_size, -1).clone()
     t_last_spike = torch.full((batch_size, N), -1000.0, device=W_t.device)
     I_syn = torch.zeros((batch_size, N), device=W_t.device)
 
@@ -516,7 +520,8 @@ def run_batch_network_stepped(
             cur_scale = scale_act
 
         I_syn = I_syn * decay_factor
-        I_bg = torch.randn((batch_size, N), device=W_t.device) * bg_std + bg_mean
+        # Share identical noise across batches for consistent baseline
+        I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
         I_total = (I_syn * cur_scale) + I_bg + cur_I_mod
 
         # LIF 积分: C_m * dV/dt = -(V - V_rest) / R_eff + I_total
@@ -567,8 +572,17 @@ def run_dynamic_d1_kernel(
     Batch 0 = Control (0 nM), Batch 1 = Experiment (da_level nM)
     """
     # --- 药理学常数 (与 config.py 一致) ---
+    # --- D1 Langmuir 动力学参数 ---
     TAU_ON_D1 = 30876.1
     TAU_OFF_D1 = 164472.5
+    k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)   # D1 binding rate (ms⁻¹)
+    k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)  # D1 unbinding rate (ms⁻¹)
+    # --- D2 Langmuir 动力学参数 ---
+    TAU_ON_D2 = 10000.0
+    TAU_OFF_D2 = 50000.0
+    k_on_d2  = 1.0 / TAU_ON_D2   # D2 binding rate (ms⁻¹)
+    k_off_d2 = 1.0 / TAU_OFF_D2  # D2 unbinding rate (ms⁻¹)
+
     EC50_D1 = 4.0
     EC50_D2 = 8.0
     BETA = 1.0
@@ -581,19 +595,21 @@ def run_dynamic_d1_kernel(
     # τ_m = R_base * C_m: E 神经元 τ_m = 0.1 GΩ * 250 pF = 25 ms
     V_rest, V_reset, V_th = -70.0, -75.0, -50.0
     R_base, tau_syn, t_ref = 0.1, 5.0, 5.0  # R_base unit: GΩ (= mV/pA)
-    bg_mean, bg_std = 190.0, 25.0  # V_ss=-51mV, σ_V=R_base*bg_std=0.1*25=2.5mV, drives spontaneous firing
-    C_E, C_I = 250.0, 50.0  # membrane capacitance (pF): E=250, I=50
+    bg_mean, bg_std = 190.0, 25.0  # V_ss=-51mV, near threshold, noise-driven firing
+    C_E, C_I = 250.0, 90.0  # membrane capacitance (pF): E=250, I=90
 
     # --- 初始化 ---
     N = W_t.shape[0]
     batch_size = 2
     steps = int(duration / dt)
 
-    # --- C_m 向量: (1, N), E 神经元=250, I 神经元=50 ---
+    # --- C_m 向量: (1, N), E 神经元=250, I 神经元=90 ---
     C_m = torch.full((1, N), C_I, device=W_t.device)
     C_m[0, :n_exc] = C_E
 
-    V = torch.rand((batch_size, N), device=W_t.device) * (V_th - V_reset) + V_reset
+    # Share identical initial V across batches so baseline is consistent
+    V_init = torch.rand((1, N), device=W_t.device) * (V_th - V_reset) + V_reset
+    V = V_init.expand(batch_size, -1).clone()
     t_last_spike = torch.full((batch_size, N), -1000.0, device=W_t.device)
     I_syn = torch.zeros((batch_size, N), device=W_t.device)
     alpha_d1 = torch.zeros((batch_size, 1), device=W_t.device)
@@ -623,11 +639,11 @@ def run_dynamic_d1_kernel(
             s_d1[:] = 0.0
         s_d1[0] = 0.0  # Control 始终为 0
 
-        # C. 更新 alpha_D1 (一阶动力学)
-        alpha_d1 = compute_alpha_d1_step(alpha_d1, da_t, current_time, da_onset, dt)
+        # C. 更新 alpha_D1 (Langmuir 受体结合动力学)
+        alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1)
 
-        # D. 更新 alpha_D2 (一阶动力学, τ_on=10000ms, τ_off=50000ms)
-        alpha_d2 = compute_alpha_d2_step(alpha_d2, da_t, current_time, da_onset, dt)
+        # D. 更新 alpha_D2 (Langmuir 受体结合动力学)
+        alpha_d2 = compute_alpha_d2_step_langmuir(alpha_d2, da_t, current_time, da_onset, dt, k_on_d2, k_off_d2)
 
         # E. 组装调节参数
         # mod_R: D1 区域 R_eff = R_base*(1+EPS_D1*alpha_d1), D2 区域 R_eff = R_base*(1-EPS_D2*alpha_d2)
@@ -646,7 +662,8 @@ def run_dynamic_d1_kernel(
 
         # F. LIF 积分: C_m * dV/dt = -(V - V_rest) / R_eff + I_total
         I_syn = I_syn * decay_factor
-        I_bg = torch.randn((batch_size, N), device=W_t.device) * bg_std + bg_mean
+        # Share identical noise across batches for consistent baseline
+        I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
         I_total = (I_syn * scale_syn) + I_bg + I_mod
 
         R_eff = mod_R  # mod_R 已包含 R_base，直接作为有效膜电阻
@@ -702,25 +719,37 @@ def run_dynamic_d1_d2_kernel(
     EPS_D1, EPS_D2 = 0.15, 0.10   # D1: Gain 增强比例; D2: Gain 减弱比例
     BIAS_D1, BIAS_D2 = 3.0, -3.0
     LAM_D1, LAM_D2 = 0.3, 0.2
+    # --- D1 Langmuir 动力学参数 ---
+    TAU_ON_D1 = 30876.1
+    TAU_OFF_D1 = 164472.5
+    k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)   # D1 binding rate (ms⁻¹)
+    k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)  # D1 unbinding rate (ms⁻¹)
+    # --- D2 Langmuir 动力学参数 ---
+    TAU_ON_D2 = 10000.0
+    TAU_OFF_D2 = 50000.0
+    k_on_d2  = 1.0 / TAU_ON_D2   # D2 binding rate (ms⁻¹)
+    k_off_d2 = 1.0 / TAU_OFF_D2  # D2 unbinding rate (ms⁻¹)
 
     # --- LIF 参数 ---
     # R_base: 基础膜电阻 (GΩ = mV/pA), V in mV, I in pA
     # τ_m = R_base * C_m: E 神经元 τ_m = 0.1 GΩ * 250 pF = 25 ms
     V_rest, V_reset, V_th = -70.0, -75.0, -50.0
     R_base, tau_syn, t_ref = 0.1, 5.0, 5.0  # R_base unit: GΩ (= mV/pA)
-    bg_mean, bg_std = 190.0, 25.0  # V_ss=-51mV, σ_V=R_base*bg_std=0.1*25=2.5mV, drives spontaneous firing
-    C_E, C_I = 250.0, 50.0  # membrane capacitance (pF): E=250, I=50
+    bg_mean, bg_std = 190.0, 25.0  # V_ss=-51mV, near threshold, noise-driven firing
+    C_E, C_I = 250.0, 90.0  # membrane capacitance (pF): E=250, I=90
 
     # --- 初始化 ---
     N = W_t.shape[0]
     batch_size = 2
     steps = int(duration / dt)
 
-    # --- C_m 向量: (1, N), E 神经元=250, I 神经元=50 ---
+    # --- C_m 向量: (1, N), E 神经元=250, I 神经元=90 ---
     C_m = torch.full((1, N), C_I, device=W_t.device)
     C_m[0, :n_exc] = C_E
 
-    V = torch.rand((batch_size, N), device=W_t.device) * (V_th - V_reset) + V_reset
+    # Share identical initial V across batches so baseline is consistent
+    V_init = torch.rand((1, N), device=W_t.device) * (V_th - V_reset) + V_reset
+    V = V_init.expand(batch_size, -1).clone()
     t_last_spike = torch.full((batch_size, N), -1000.0, device=W_t.device)
     I_syn = torch.zeros((batch_size, N), device=W_t.device)
     alpha_d1 = torch.zeros((batch_size, 1), device=W_t.device)
@@ -744,11 +773,11 @@ def run_dynamic_d1_d2_kernel(
             current_da_val = float(da_level)
         da_t = torch.tensor([[0.0], [current_da_val]], device=W_t.device)
 
-        # B. 更新 alpha_D1 (一阶动力学: τ_on=30876ms, τ_off=164472ms)
-        alpha_d1 = compute_alpha_d1_step(alpha_d1, da_t, current_time, da_onset, dt)
+        # B. 更新 alpha_D1 (Langmuir 受体结合动力学)
+        alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1)
 
-        # C. 更新 alpha_D2 (一阶动力学: τ_on=10000ms, τ_off=50000ms)
-        alpha_d2 = compute_alpha_d2_step(alpha_d2, da_t, current_time, da_onset, dt)
+        # C. 更新 alpha_D2 (Langmuir 受体结合动力学)
+        alpha_d2 = compute_alpha_d2_step_langmuir(alpha_d2, da_t, current_time, da_onset, dt, k_on_d2, k_off_d2)
 
         # D. 组装调节参数
         # mod_R: D1 区域 R_eff = R_base*(1+EPS_D1*alpha_d1), D2 区域 R_eff = R_base*(1-EPS_D2*alpha_d2)
@@ -767,7 +796,8 @@ def run_dynamic_d1_d2_kernel(
 
         # E. LIF 积分: C_m * dV/dt = -(V - V_rest) / R_eff + I_total
         I_syn = I_syn * decay_factor
-        I_bg = torch.randn((batch_size, N), device=W_t.device) * bg_std + bg_mean
+        # Share identical noise across batches for consistent baseline
+        I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
         I_total = (I_syn * scale_syn) + I_bg + I_mod
 
         R_eff = mod_R  # mod_R 已包含 R_base，直接作为有效膜电阻

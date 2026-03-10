@@ -19,8 +19,8 @@ N_TOTAL = N_E + N_I
 
 # 连接概率与权重
 CONN_PROB = 0.20    # 连接概率
-W_EXC = 0.3         # 兴奋性权重
-W_INH = -2.0        # 抑制性权重
+W_EXC = 5.0         # 兴奋性权重 (pA) [换算自BrainPy COBA: 0.6nS → ~14pA, 取中等值]
+W_INH = -25.0       # 抑制性权重 (pA) [换算自BrainPy COBA: 6.7nS → ~54pA, 取中等值]
 
 # 受体表达比例
 FRAC_E_D1 = 0.25    # E 神经元中 D1R 比例
@@ -42,8 +42,8 @@ T_REF = 5.0         # 不应期 (ms)
 # 背景输入
 # V_ss = V_rest + R_base * I_bg = -70 + 0.1 * 190 = -51 mV ≈ V_th(-50mV)
 # 噪声: BG_STD=25 pA → σ_V = R_base * BG_STD = 0.1 * 25 = 2.5 mV，可有效驱动自发发放
-BG_MEAN = 190.0     # 背景电流均值 (pA)  [V_ss=-51mV，略超阈值-50mV，可自发发放]
-BG_STD = 25.0       # 背景电流标准差 (pA)  [σ_V=2.5mV，足以驱动E神经元自发发放]
+BG_MEAN = 190.0     # 背景电流均值 (pA)  [V_ss=-51mV，near threshold，noise-driven firing]
+BG_STD = 25.0       # 背景电流标准差 (pA)  [σ_V~0.6mV(I)/0.36mV(E)，noise-driven firing]
 
 # ==============================================================================
 # 4. 仿真参数 (Simulation)
