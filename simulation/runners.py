@@ -292,14 +292,15 @@ def run_simulation_d1_kinetics(duration: float = None, target_da: float = None):
 # Runner 4: D1 + D2 受体动力学 (alpha_D1 和 alpha_D2 均遵循一阶 ODE)
 # ==============================================================================
 
-def run_simulation_d1_d2_kinetics(duration: float = None, target_da: float = None):
+def run_simulation_d1_d2_kinetics(duration: float = None, target_da: float = None, device: torch.device = None):
     """
     D1 + D2 受体动力学仿真:
     - alpha_D1 按 τ_on=30876ms / τ_off=164472ms 缓慢爬升/衰减
     - alpha_D2 按 τ_on=10000ms / τ_off=50000ms 更快响应
     Batch 0 = Control (0 nM), Batch 1 = Experiment (target_da nM)
     """
-    device = config.DEVICE
+    if device is None:
+        device = config.DEVICE
 
     if duration is None:
         duration = 100000.0  # 100 秒 (因为 D1 Tau ≈ 30s)
