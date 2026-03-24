@@ -1,625 +1,369 @@
 # analysis/plotting.py
 """
-独立绘图函数: 接收 PFCAnalyzer 实例, 生成并保存图表。
-使用 Agg 后端以兼容无头服务器。
+Combined plotting functions for DA-PFC simulation.
+
+Each plot type produces ONE figure with a 3×2 layout:
+  - Row 0: Full time-range
+  - Row 1: Zoom — Before DA (baseline segment)
+  - Row 2: Zoom — After DA (steady-state segment)
+  - Col 0: Batch 0 (Control)
+  - Col 1: Batch 1 (Experiment)
+
+Y-axes are unified across all panels for fair comparison.
 """
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
+# Global font settings — make everything larger for readability
+plt.rcParams.update({
+    'font.size': 16,
+    'axes.titlesize': 20,
+    'axes.labelsize': 18,
+    'xtick.labelsize': 14,
+    'ytick.labelsize': 14,
+    'legend.fontsize': 15,
+})
+
 from analysis.analyzer import PFCAnalyzer
 
 
-def plot_population_rates(analyzer: PFCAnalyzer, save_dir=None,
-                          batch_idx: int = 1, time_win: float = 100.0):
-    """
-    绘制群体发放率曲线。
+# ---------------------------------------------------------------------------
+# Helper: draw DA onset vertical line
+# ---------------------------------------------------------------------------
+def _draw_onset_line(ax, onset_x, ylim_top):
+    ax.axvline(onset_x, color='black', linestyle='--', alpha=0.6, linewidth=1.8)
+    ax.text(onset_x, ylim_top * 0.97, " DA", fontsize=16, va='top', color='black')
 
-    Args:
-        analyzer:   PFCAnalyzer 实例
-        save_dir:   保存路径 (Path), None 则 plt.show()
-        batch_idx:  Batch ID (0=Control, 1=Exp)
-        time_win:   时间窗宽度 (ms), 长仿真建议 100~500
-    """
-    print(f"🎨 Plotting firing rates for Batch {batch_idx}...")
 
-    fig, ax = plt.subplots(figsize=(14, 7), dpi=150)
+# ---------------------------------------------------------------------------
+# 1. Combined Raster Plot  (2×2)
+# ---------------------------------------------------------------------------
+def plot_combined_raster(analyzer: PFCAnalyzer, save_dir=None,
+                         max_spikes_per_group: int = 80000,
+                         zoom_window: float = 2000.0):
+    """
+    Produce a single 3×2 raster figure:
+      [full-Control]        [full-Exp ]
+      [before-DA-Control]   [before-DA-Exp ]
+      [after-DA-Control]    [after-DA-Exp ]
+    """
+    print("🎨 Plotting combined raster (3×2)...")
+
     target_groups = ['E-D1', 'E-D2', 'E-Other', 'I-D1', 'I-D2', 'I-Other']
-    # 线型区分 E / I 亚群
-    line_styles = {
-        'E-D1': '-', 'E-D2': '-', 'E-Other': '-',
-        'I-D1': '--', 'I-D2': '--', 'I-Other': '--',
-    }
-    lines_drawn = 0
-    x_label = "Time (ms)"
-    onset_line = analyzer.da_onset
+    da_onset = analyzer.da_onset
 
-    for grp_name in target_groups:
-        if grp_name not in analyzer.groups:
-            print(f"   ⚠️ Group '{grp_name}' not found, skipping.")
+    # Before-DA window: a segment from baseline period
+    before_end = da_onset
+    before_start = max(0.0, before_end - zoom_window)
+
+    # After-DA window: pick a segment well after DA onset so alpha is near steady-state
+    # Use the last `zoom_window` ms of the simulation, or midpoint if duration is very long
+    da_duration = analyzer.duration - da_onset
+    if da_duration > zoom_window * 3:
+        # Pick a window starting at 2/3 of the DA period
+        after_start = da_onset + da_duration * 0.6
+        after_end = after_start + zoom_window
+        if after_end > analyzer.duration:
+            after_end = analyzer.duration
+            after_start = after_end - zoom_window
+    else:
+        after_end = analyzer.duration
+        after_start = max(da_onset, after_end - zoom_window)
+
+    fig, axes = plt.subplots(3, 2, figsize=(32, 30), dpi=200)
+
+    for col, batch_idx in enumerate([0, 1]):
+        # --- get spike data for this batch ---
+        all_s = analyzer.data['spikes']
+        mask_batch = all_s[:, 1] == batch_idx
+        spikes_batch = all_s[mask_batch][:, [0, 2]].numpy()
+        if len(spikes_batch) == 0:
             continue
 
-        centers, rate = analyzer.compute_group_rate(batch_idx, grp_name, time_win=time_win)
-        if rate is None or len(rate) == 0:
-            continue
+        ts_ms = spikes_batch[:, 0] * analyzer.dt
+        neuron_ids = spikes_batch[:, 1]
 
-        # 自动 ms → s 转换
-        if centers[-1] > 10000:
-            x_data = centers / 1000.0
-            x_label = "Time (s)"
-            onset_line = analyzer.da_onset / 1000.0
+        # Auto ms → s for full plot
+        if analyzer.duration > 10000:
+            x_full = ts_ms / 1000.0
+            x_label_full = "Time (s)"
+            onset_full = da_onset / 1000.0
+            x_max_full = analyzer.duration / 1000.0
         else:
-            x_data = centers
-            x_label = "Time (ms)"
-            onset_line = analyzer.da_onset
+            x_full = ts_ms
+            x_label_full = "Time (ms)"
+            onset_full = da_onset
+            x_max_full = analyzer.duration
 
-        color = PFCAnalyzer.COLORS.get(grp_name, 'k')
-        ls = line_styles.get(grp_name, '-')
-        # E 亚群实线稍粗，I 亚群虚线稍细，透明度适当降低避免重叠遮挡
-        lw = 1.8 if grp_name.startswith('E') else 1.4
-        alpha = 0.85 if grp_name.startswith('E') else 0.70
-        ax.plot(x_data, rate, color=color, label=grp_name,
-                lw=lw, alpha=alpha, linestyle=ls)
-        lines_drawn += 1
+        rng = np.random.default_rng(42)
 
-    if lines_drawn == 0:
-        print("❌ ERROR: No lines were drawn! Check batch_idx or group names.")
-        plt.close(fig)
-        return
+        # Row 0: Full, Row 1: Before DA, Row 2: After DA
+        zoom_configs = [
+            {'zoom': False, 'start': None, 'end': None, 'label': 'Full'},
+            {'zoom': True, 'start': before_start, 'end': before_end,
+             'label': f'Before DA [{before_start:.0f}–{before_end:.0f} ms]'},
+            {'zoom': True, 'start': after_start, 'end': after_end,
+             'label': f'After DA [{after_start:.0f}–{after_end:.0f} ms]'},
+        ]
 
-    # 美化
-    ax.set_xlabel(x_label, fontsize=15)
-    ax.set_ylabel("Firing Rate (Hz)", fontsize=15)
-    batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
-    ax.set_title(f"Population Activities — {batch_label}", fontsize=17)
-    ax.grid(True, linestyle='--', alpha=0.3)
-    ax.legend(loc='upper left', fontsize=13)
+        for row, cfg in enumerate(zoom_configs):
+            ax = axes[row, col]
 
-    # DA Onset 竖线
-    if onset_line > 0:
-        ax.axvline(onset_line, color='black', linestyle='--', alpha=0.6)
-        ax.text(onset_line, ax.get_ylim()[1] * 0.95, " DA Onset", fontsize=13, va='top')
+            if cfg['zoom']:
+                mask_time = (ts_ms >= cfg['start']) & (ts_ms <= cfg['end'])
+                x_data = ts_ms[mask_time]
+                n_ids = neuron_ids[mask_time]
+            else:
+                x_data = x_full
+                n_ids = neuron_ids
 
-    # 保存或显示
-    if save_dir:
-        save_path = save_dir / f"firing_rates_batch_{batch_idx}.png"
-        plt.savefig(save_path, bbox_inches='tight')
-        print(f"📊 Plot saved to: {save_path}")
-        plt.close(fig)
-    else:
-        plt.show()
+            for grp_name in target_groups:
+                if grp_name not in analyzer.groups:
+                    continue
+                valid_neurons = np.where(analyzer.groups[grp_name])[0]
+                mask_grp = np.isin(n_ids, valid_neurons)
+                gx, gy = x_data[mask_grp], n_ids[mask_grp]
+                if len(gx) == 0:
+                    continue
+                if len(gx) > max_spikes_per_group:
+                    idx = rng.choice(len(gx), size=max_spikes_per_group, replace=False)
+                    gx, gy = gx[idx], gy[idx]
+                color = PFCAnalyzer.COLORS.get(grp_name, 'black')
 
+                # Adjust marker size & alpha for readability
+                if cfg['zoom']:
+                    # Zoom panels: larger, more opaque dots
+                    ax.scatter(gx, gy, s=8, color=color, alpha=0.85,
+                               linewidths=0, rasterized=True)
+                else:
+                    # Full panel: moderate size, slightly transparent
+                    ax.scatter(gx, gy, s=4, color=color, alpha=0.55,
+                               linewidths=0, rasterized=True)
 
-def plot_raster_figure(analyzer: PFCAnalyzer, save_dir=None,
-                       batch_idx: int = 1,
-                       target_groups=None,
-                       max_spikes_per_group: int = 50000):
-    """
-    绘制 Raster Plot (散点图), 每个点代表一次神经元发放。
-    默认绘制全部 6 个亚群 (neuron ID 0-999)。
+            # E/I boundary
+            ax.axhline(analyzer.N_E - 0.5, color='gray', linestyle='-',
+                       linewidth=0.8, alpha=0.5)
+            ax.set_ylim(-1, analyzer.N)
+            ax.grid(True, axis='x', linestyle='--', alpha=0.2)
 
-    Args:
-        analyzer:              PFCAnalyzer 实例
-        save_dir:              保存路径 (Path), None 则 plt.show()
-        batch_idx:             Batch ID (0=Control, 1=Exp)
-        target_groups:         要绘制的亚群列表, None 则绘制全部 6 个亚群
-        max_spikes_per_group:  每个亚群最多绘制的 spike 数 (随机下采样上限)
-    """
-    if target_groups is None:
-        # 全部 6 个亚群，覆盖 neuron ID 0-999
-        target_groups = ['E-D1', 'E-D2', 'E-Other', 'I-D1', 'I-D2', 'I-Other']
+            if cfg['zoom']:
+                ax.set_xlim(cfg['start'], cfg['end'])
+                ax.set_xlabel("Time (ms)")
+            else:
+                ax.set_xlim(0, x_max_full)
+                ax.set_xlabel(x_label_full)
+                if batch_idx == 1 and onset_full > 0:
+                    _draw_onset_line(ax, onset_full, analyzer.N)
 
-    print(f"🎨 Plotting raster for Batch {batch_idx}...")
+            if col == 0:
+                ax.set_ylabel("Neuron ID")
 
-    # --- 获取 spike 数据 ---
-    all_s = analyzer.data['spikes']
-    mask_batch = all_s[:, 1] == batch_idx
-    spikes_batch = all_s[mask_batch][:, [0, 2]].numpy()   # [time_step, neuron_id]
+            ax.tick_params(axis='both', which='major', labelsize=14)
 
-    if len(spikes_batch) == 0:
-        print("❌ No spikes found for this batch.")
-        return
-
-    ts_ms = spikes_batch[:, 0] * analyzer.dt   # ms
-    neuron_ids = spikes_batch[:, 1]
-
-    # --- 自动 ms → s 转换 ---
-    if analyzer.duration > 10000:
-        x_data = ts_ms / 1000.0
-        x_label = "Time (s)"
-        onset_line = analyzer.da_onset / 1000.0
-        x_max = analyzer.duration / 1000.0
-    else:
-        x_data = ts_ms
-        x_label = "Time (ms)"
-        onset_line = analyzer.da_onset
-        x_max = analyzer.duration
-
-    # --- 绘图 ---
-    fig, ax = plt.subplots(figsize=(16, 9), dpi=150)
-
-    rng = np.random.default_rng(42)
-    any_drawn = False
-
-    for grp_name in target_groups:
-        if grp_name not in analyzer.groups:
-            print(f"   ⚠️ Group '{grp_name}' not found, skipping.")
-            continue
-
-        valid_neurons = np.where(analyzer.groups[grp_name])[0]
-        mask_grp = np.isin(neuron_ids, valid_neurons)
-        grp_x = x_data[mask_grp]
-        grp_y = neuron_ids[mask_grp]
-
-        if len(grp_x) == 0:
-            continue
-
-        # 下采样（上限调高，尽量保留全部 spike）
-        if len(grp_x) > max_spikes_per_group:
-            idx = rng.choice(len(grp_x), size=max_spikes_per_group, replace=False)
-            grp_x = grp_x[idx]
-            grp_y = grp_y[idx]
-
-        color = PFCAnalyzer.COLORS.get(grp_name, 'black')
-        # 点大小 s=3，alpha=0.8，让每个 spike 清晰可见
-        ax.scatter(grp_x, grp_y, s=3, color=color,
-                   label=f"{grp_name} ({int(np.sum(mask_grp))} spikes)",
-                   alpha=0.8, linewidths=0, rasterized=True)
-        any_drawn = True
-
-    if not any_drawn:
-        print("❌ ERROR: No spikes drawn! Check batch_idx or group names.")
-        plt.close(fig)
-        return
-
-    # --- E/I 分界线 ---
-    ax.axhline(analyzer.N_E - 0.5, color='gray', linestyle='-',
-               linewidth=1.0, alpha=0.6)
-    ax.text(x_max * 0.01, analyzer.N_E - 0.5 + 5,
-            "← I neurons", fontsize=12, color='gray', va='bottom')
-    ax.text(x_max * 0.01, analyzer.N_E - 0.5 - 5,
-            "E neurons →", fontsize=12, color='gray', va='top')
-
-    # --- DA Onset 竖线 ---
-    if onset_line > 0 and batch_idx == 1:
-        ax.axvline(onset_line, color='black', linestyle='--', linewidth=1.5, alpha=0.8)
-        ax.text(onset_line, analyzer.N * 0.98,
-                " DA Onset", fontsize=13, va='top', ha='left', color='black')
-
-    # --- 美化 ---
-    ax.set_xlim(0, x_max)
-    ax.set_ylim(-1, analyzer.N)
-    ax.set_xlabel(x_label, fontsize=16)
-    ax.set_ylabel("Neuron ID", fontsize=16)
-    batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
-    ax.set_title(f"Raster Plot — {batch_label}  (all {analyzer.N} neurons)", fontsize=17)
-    ax.grid(True, axis='x', linestyle='--', alpha=0.2)
-    legend = ax.legend(loc='upper right', fontsize=12,
-                       markerscale=4, framealpha=0.85)
-    for handle in legend.legend_handles:
-        handle.set_alpha(1.0)
-        handle._sizes = [30]
+            # Title
+            batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
+            ax.set_title(f"Raster — {batch_label} ({cfg['label']})")
 
     plt.tight_layout()
-
-    # --- 保存或显示 ---
     if save_dir:
-        save_path = save_dir / f"raster_batch_{batch_idx}.png"
-        plt.savefig(save_path, bbox_inches='tight', dpi=150)
-        print(f"📊 Raster saved to: {save_path}")
-        plt.close(fig)
+        save_path = save_dir / "combined_raster.png"
+        plt.savefig(save_path, bbox_inches='tight', dpi=200)
+        print(f"📊 Saved: {save_path}")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# 2. Combined Firing Rate Plot (generic helper)
+# ---------------------------------------------------------------------------
+def _plot_combined_rates(analyzer: PFCAnalyzer, group_names: list,
+                         title_prefix: str, filename: str,
+                         save_dir=None,
+                         time_win_full: float = 100.0,
+                         time_win_zoom: float = 5.0,
+                         zoom_window: float = 2000.0):
+    """
+    Generic 3×2 firing-rate figure.
+    Row 0 = full time-range, Row 1 = Before DA zoom, Row 2 = After DA zoom.
+    Col 0 = Control, Col 1 = Exp.
+    Y-axes are unified across all panels.
+    """
+    print(f"🎨 Plotting combined {title_prefix} rates (3×2)...")
+
+    da_onset = analyzer.da_onset
+
+    # Before-DA window
+    before_end = da_onset
+    before_start = max(0.0, before_end - zoom_window)
+
+    # After-DA window: well after onset so alpha is near steady-state
+    da_duration = analyzer.duration - da_onset
+    if da_duration > zoom_window * 3:
+        after_start = da_onset + da_duration * 0.6
+        after_end = after_start + zoom_window
+        if after_end > analyzer.duration:
+            after_end = analyzer.duration
+            after_start = after_end - zoom_window
     else:
-        plt.show()
+        after_end = analyzer.duration
+        after_start = max(da_onset, after_end - zoom_window)
 
+    line_styles = {
+        'E-D1': '-', 'E-D2': '-', 'E-Other': '-',
+        'I-D1': '-', 'I-D2': '-', 'I-Other': '-',
+    }
 
-def _plot_group_rates(analyzer: PFCAnalyzer, group_names: list, title_prefix: str,
-                      save_dir=None, batch_idx: int = 1, time_win: float = 100.0,
-                      filename: str = "rates.png"):
-    """
-    内部通用函数: 绘制指定亚群列表的发放率曲线。
-    """
-    print(f"🎨 Plotting {title_prefix} firing rates for Batch {batch_idx}...")
+    fig, axes = plt.subplots(3, 2, figsize=(32, 28), dpi=200)
 
-    fig, ax = plt.subplots(figsize=(14, 6), dpi=150)
-    x_label = "Time (ms)"
-    onset_line = analyzer.da_onset
-    lines_drawn = 0
+    # Define row configs: (is_zoom, zoom_start, zoom_end, label)
+    row_configs = [
+        (False, None, None, 'Full'),
+        (True, before_start, before_end,
+         f'Before DA [{before_start:.0f}–{before_end:.0f} ms]'),
+        (True, after_start, after_end,
+         f'After DA [{after_start:.0f}–{after_end:.0f} ms]'),
+    ]
 
-    for grp_name in group_names:
-        if grp_name not in analyzer.groups:
-            print(f"   ⚠️ Group '{grp_name}' not found, skipping.")
-            continue
+    # ---- first pass: draw all curves, collect y-ranges ----
+    y_max_full = -np.inf
+    y_min_full = np.inf
+    y_max_zoom = -np.inf
+    y_min_zoom = np.inf
 
-        centers, rate = analyzer.compute_group_rate(batch_idx, grp_name, time_win=time_win)
-        if rate is None or len(rate) == 0:
-            continue
+    for col, batch_idx in enumerate([0, 1]):
+        for row, (is_zoom, z_start, z_end, _label) in enumerate(row_configs):
+            ax = axes[row, col]
+            tw = time_win_zoom if is_zoom else time_win_full
 
-        # 自动 ms → s 转换
-        if centers[-1] > 10000:
-            x_data = centers / 1000.0
-            x_label = "Time (s)"
-            onset_line = analyzer.da_onset / 1000.0
-        else:
-            x_data = centers
-            x_label = "Time (ms)"
-            onset_line = analyzer.da_onset
+            for grp_name in group_names:
+                if grp_name not in analyzer.groups:
+                    continue
+                centers, rate = analyzer.compute_group_rate(batch_idx, grp_name, time_win=tw)
+                if rate is None or len(rate) == 0:
+                    continue
 
-        color = PFCAnalyzer.COLORS.get(grp_name, 'k')
-        ax.plot(x_data, rate, color=color, label=grp_name, lw=1.8, alpha=0.85)
-        lines_drawn += 1
+                if is_zoom:
+                    mask = (centers >= z_start) & (centers <= z_end)
+                    if not np.any(mask):
+                        continue
+                    x_data = centers[mask]
+                    y_data = rate[mask]
+                else:
+                    if centers[-1] > 10000:
+                        x_data = centers / 1000.0
+                    else:
+                        x_data = centers
+                    y_data = rate
 
-    if lines_drawn == 0:
-        print(f"❌ ERROR: No lines drawn for {title_prefix}!")
-        plt.close(fig)
-        return
+                color = PFCAnalyzer.COLORS.get(grp_name, 'k')
+                ls = line_styles.get(grp_name, '-')
+                lw = 2.5 if grp_name.startswith('E') else 2.0
+                alpha = 0.85 if grp_name.startswith('E') else 0.70
+                ax.plot(x_data, y_data, color=color, label=grp_name,
+                        lw=lw, alpha=alpha, linestyle=ls)
 
-    ax.set_xlabel(x_label, fontsize=15)
-    ax.set_ylabel("Firing Rate (Hz)", fontsize=15)
-    batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
-    ax.set_title(f"{title_prefix} Population Activities — {batch_label}", fontsize=17)
-    ax.grid(True, linestyle='--', alpha=0.3)
-    ax.legend(loc='upper left', fontsize=13)
+                cur_max = float(np.nanmax(y_data))
+                cur_min = float(np.nanmin(y_data))
+                if is_zoom:
+                    y_max_zoom = max(y_max_zoom, cur_max)
+                    y_min_zoom = min(y_min_zoom, cur_min)
+                else:
+                    y_max_full = max(y_max_full, cur_max)
+                    y_min_full = min(y_min_full, cur_min)
 
-    if onset_line > 0:
-        ax.axvline(onset_line, color='black', linestyle='--', alpha=0.6)
-        ax.text(onset_line, ax.get_ylim()[1] * 0.95, " DA Onset", fontsize=13, va='top')
+    # ---- second pass: unify y-axes and add decorations ----
+    # Adaptive ylim: use data range with 10% margin on each side
+    if y_max_full > -np.inf and y_min_full < np.inf:
+        y_range_full = y_max_full - y_min_full
+        margin_full = y_range_full * 0.10 if y_range_full > 0 else 1.0
+        ylim_full = (y_min_full - margin_full, y_max_full + margin_full)
+    else:
+        ylim_full = None
 
+    if y_max_zoom > -np.inf and y_min_zoom < np.inf:
+        y_range_zoom = y_max_zoom - y_min_zoom
+        margin_zoom = y_range_zoom * 0.10 if y_range_zoom > 0 else 1.0
+        ylim_zoom = (y_min_zoom - margin_zoom, y_max_zoom + margin_zoom)
+    else:
+        ylim_zoom = None
+
+    for col, batch_idx in enumerate([0, 1]):
+        for row, (is_zoom, z_start, z_end, row_label) in enumerate(row_configs):
+            ax = axes[row, col]
+
+            if is_zoom:
+                ax.set_xlim(z_start, z_end)
+                ax.set_xlabel("Time (ms)")
+                if ylim_zoom:
+                    ax.set_ylim(ylim_zoom[0], ylim_zoom[1])
+            else:
+                if analyzer.duration > 10000:
+                    ax.set_xlim(0, analyzer.duration / 1000.0)
+                    ax.set_xlabel("Time (s)")
+                    onset_x = da_onset / 1000.0
+                else:
+                    ax.set_xlim(0, analyzer.duration)
+                    ax.set_xlabel("Time (ms)")
+                    onset_x = da_onset
+                if ylim_full:
+                    ax.set_ylim(ylim_full[0], ylim_full[1])
+                if onset_x > 0:
+                    _draw_onset_line(ax, onset_x, ax.get_ylim()[1])
+
+            if col == 0:
+                ax.set_ylabel("Firing Rate (Hz)")
+
+            ax.tick_params(axis='both', which='major', labelsize=14)
+            ax.grid(True, linestyle='--', alpha=0.3)
+
+            # Title
+            batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
+            ax.set_title(f"{title_prefix} — {batch_label} ({row_label})")
+
+            # Legend only on top-left panel to save space
+            if row == 0 and col == 0:
+                ax.legend(loc='upper left')
+
+    plt.tight_layout()
     if save_dir:
         save_path = save_dir / filename
         plt.savefig(save_path, bbox_inches='tight')
-        print(f"📊 Plot saved to: {save_path}")
-        plt.close(fig)
-    else:
-        plt.show()
+        print(f"📊 Saved: {save_path}")
+    plt.close(fig)
 
 
-def plot_excitatory_rates(analyzer: PFCAnalyzer, save_dir=None,
-                          batch_idx: int = 1, time_win: float = 100.0):
-    """
-    单独绘制所有 E（兴奋性）亚群的发放率曲线。
-    输出文件: firing_rates_E_batch_{batch_idx}.png
-    """
-    _plot_group_rates(
+# ---------------------------------------------------------------------------
+# Public API: 3 combined rate figures
+# ---------------------------------------------------------------------------
+def plot_combined_rates_all(analyzer: PFCAnalyzer, save_dir=None):
+    """All 6 subgroups: 2×2 combined figure."""
+    _plot_combined_rates(
+        analyzer,
+        group_names=['E-D1', 'E-D2', 'E-Other', 'I-D1', 'I-D2', 'I-Other'],
+        title_prefix="All Population",
+        filename="combined_rates_all.png",
+        save_dir=save_dir,
+    )
+
+
+def plot_combined_rates_E(analyzer: PFCAnalyzer, save_dir=None):
+    """Excitatory subgroups only: 2×2 combined figure."""
+    _plot_combined_rates(
         analyzer,
         group_names=['E-D1', 'E-D2', 'E-Other'],
         title_prefix="Excitatory (E)",
+        filename="combined_rates_E.png",
         save_dir=save_dir,
-        batch_idx=batch_idx,
-        time_win=time_win,
-        filename=f"firing_rates_E_batch_{batch_idx}.png",
     )
 
 
-def plot_inhibitory_rates(analyzer: PFCAnalyzer, save_dir=None,
-                          batch_idx: int = 1, time_win: float = 100.0):
-    """
-    单独绘制所有 I（抑制性）亚群的发放率曲线。
-    输出文件: firing_rates_I_batch_{batch_idx}.png
-    """
-    _plot_group_rates(
+def plot_combined_rates_I(analyzer: PFCAnalyzer, save_dir=None):
+    """Inhibitory subgroups only: 2×2 combined figure."""
+    _plot_combined_rates(
         analyzer,
         group_names=['I-D1', 'I-D2', 'I-Other'],
         title_prefix="Inhibitory (I)",
+        filename="combined_rates_I.png",
         save_dir=save_dir,
-        batch_idx=batch_idx,
-        time_win=time_win,
-        filename=f"firing_rates_I_batch_{batch_idx}.png",
     )
-
-
-# ==============================================================================
-# Short Time-Scale Zoom-In Plots (DA onset → DA onset + 300 ms)
-# ==============================================================================
-
-def _plot_group_rates_zoom(analyzer: PFCAnalyzer, group_names: list, title_prefix: str,
-                           save_dir=None, batch_idx: int = 1, time_win: float = 5.0,
-                           zoom_window: float = 300.0, filename: str = "rates_zoom.png",
-                           ylim=None):
-    """
-    Internal helper: plot firing rates zoomed into [DA_onset, DA_onset + zoom_window] ms.
-
-    Args:
-        analyzer:      PFCAnalyzer instance
-        group_names:   list of subgroup names to plot
-        title_prefix:  title prefix string
-        save_dir:      save directory (Path), None for plt.show()
-        batch_idx:     Batch ID (0=Control, 1=Exp)
-        time_win:      histogram bin width (ms), smaller for zoom-in
-        zoom_window:   duration after DA onset to display (ms)
-        filename:      output filename
-    """
-    da_onset = analyzer.da_onset
-    t_start = 9500.0
-    t_end = 13000.0
-
-    print(f"🔬 Plotting {title_prefix} zoom [{t_start:.0f}, {t_end:.0f}] ms for Batch {batch_idx}...")
-
-    fig, ax = plt.subplots(figsize=(14, 6), dpi=150)
-    lines_drawn = 0
-
-    for grp_name in group_names:
-        if grp_name not in analyzer.groups:
-            print(f"   ⚠️ Group '{grp_name}' not found, skipping.")
-            continue
-
-        centers, rate = analyzer.compute_group_rate(batch_idx, grp_name, time_win=time_win)
-        if rate is None or len(rate) == 0:
-            continue
-
-        # Clip to zoom window
-        mask = (centers >= t_start) & (centers <= t_end)
-        if not np.any(mask):
-            continue
-
-        x_data = centers[mask]   # absolute time (ms)
-        y_data = rate[mask]
-
-        color = PFCAnalyzer.COLORS.get(grp_name, 'k')
-        ax.plot(x_data, y_data, color=color, label=grp_name, lw=1.8, alpha=0.85)
-        lines_drawn += 1
-
-    if lines_drawn == 0:
-        print(f"❌ ERROR: No lines drawn for {title_prefix} zoom!")
-        plt.close(fig)
-        return
-
-    ax.set_xlim(t_start, t_end)
-    # Unified y-axis: use provided ylim or auto-compute from data
-    if ylim is not None:
-        ax.set_ylim(0, ylim)
-    else:
-        all_lines = ax.get_lines()
-        if all_lines:
-            y_max = max(np.nanmax(l.get_ydata()) for l in all_lines if len(l.get_ydata()) > 0)
-            ax.set_ylim(0, y_max * 1.15)
-    ax.set_xlabel("Time (ms)", fontsize=15)
-    ax.set_ylabel("Firing Rate (Hz)", fontsize=15)
-    batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
-    ax.set_title(f"{title_prefix} — {batch_label}  [{t_start:.0f}–{t_end:.0f} ms]", fontsize=17)
-    ax.grid(True, linestyle='--', alpha=0.3)
-    ax.legend(loc='upper left', fontsize=13)
-
-    # DA Onset vertical line
-    ax.axvline(da_onset, color='black', linestyle='--', alpha=0.6)
-    ax.text(da_onset, ax.get_ylim()[1] * 0.95, " DA Onset", fontsize=13, va='top')
-
-    if save_dir:
-        save_path = save_dir / filename
-        plt.savefig(save_path, bbox_inches='tight')
-        print(f"📊 Plot saved to: {save_path}")
-        plt.close(fig)
-    else:
-        plt.show()
-
-
-def plot_population_rates_zoom(analyzer: PFCAnalyzer, save_dir=None,
-                               batch_idx: int = 1, time_win: float = 5.0,
-                               zoom_window: float = 300.0, ylim=None):
-    """
-    Plot all 6 subgroup firing rates zoomed into [DA onset, DA onset + zoom_window] ms.
-    Output file: firing_rates_zoom_batch_{batch_idx}.png
-    """
-    print(f"🔬 Plotting all-population zoom firing rates for Batch {batch_idx}...")
-
-    da_onset = analyzer.da_onset
-    t_start = 9500.0
-    t_end = 13000.0
-
-    fig, ax = plt.subplots(figsize=(14, 7), dpi=150)
-    target_groups = ['E-D1', 'E-D2', 'E-Other', 'I-D1', 'I-D2', 'I-Other']
-    line_styles = {
-        'E-D1': '-', 'E-D2': '-', 'E-Other': '-',
-        'I-D1': '--', 'I-D2': '--', 'I-Other': '--',
-    }
-    lines_drawn = 0
-
-    for grp_name in target_groups:
-        if grp_name not in analyzer.groups:
-            continue
-
-        centers, rate = analyzer.compute_group_rate(batch_idx, grp_name, time_win=time_win)
-        if rate is None or len(rate) == 0:
-            continue
-
-        mask = (centers >= t_start) & (centers <= t_end)
-        if not np.any(mask):
-            continue
-
-        x_data = centers[mask]   # absolute time (ms)
-        y_data = rate[mask]
-
-        color = PFCAnalyzer.COLORS.get(grp_name, 'k')
-        ls = line_styles.get(grp_name, '-')
-        lw = 1.8 if grp_name.startswith('E') else 1.4
-        alpha = 0.85 if grp_name.startswith('E') else 0.70
-        ax.plot(x_data, y_data, color=color, label=grp_name,
-                lw=lw, alpha=alpha, linestyle=ls)
-        lines_drawn += 1
-
-    if lines_drawn == 0:
-        print("❌ ERROR: No lines drawn for zoom plot!")
-        plt.close(fig)
-        return
-
-    ax.set_xlim(t_start, t_end)
-    # Unified y-axis: use provided ylim or auto-compute from data
-    if ylim is not None:
-        ax.set_ylim(0, ylim)
-    else:
-        all_lines = ax.get_lines()
-        if all_lines:
-            y_max = max(np.nanmax(l.get_ydata()) for l in all_lines if len(l.get_ydata()) > 0)
-            ax.set_ylim(0, y_max * 1.15)
-    ax.set_xlabel("Time (ms)", fontsize=15)
-    ax.set_ylabel("Firing Rate (Hz)", fontsize=15)
-    batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
-    ax.set_title(f"Population Activities — {batch_label}  [{t_start:.0f}–{t_end:.0f} ms]", fontsize=17)
-    ax.grid(True, linestyle='--', alpha=0.3)
-    ax.legend(loc='upper left', fontsize=13)
-
-    ax.axvline(da_onset, color='black', linestyle='--', alpha=0.6)
-    ax.text(da_onset, ax.get_ylim()[1] * 0.95, " DA Onset", fontsize=13, va='top')
-
-    if save_dir:
-        save_path = save_dir / f"firing_rates_zoom_batch_{batch_idx}.png"
-        plt.savefig(save_path, bbox_inches='tight')
-        print(f"📊 Plot saved to: {save_path}")
-        plt.close(fig)
-    else:
-        plt.show()
-
-
-def plot_excitatory_rates_zoom(analyzer: PFCAnalyzer, save_dir=None,
-                               batch_idx: int = 1, time_win: float = 5.0,
-                               zoom_window: float = 300.0, ylim=None):
-    """
-    Plot E subgroups zoomed into [DA onset, DA onset + zoom_window] ms.
-    Output file: firing_rates_E_zoom_batch_{batch_idx}.png
-    """
-    _plot_group_rates_zoom(
-        analyzer,
-        group_names=['E-D1', 'E-D2', 'E-Other'],
-        title_prefix="Excitatory (E)",
-        save_dir=save_dir,
-        batch_idx=batch_idx,
-        time_win=time_win,
-        zoom_window=zoom_window,
-        filename=f"firing_rates_E_zoom_batch_{batch_idx}.png",
-        ylim=ylim,
-    )
-
-
-def plot_inhibitory_rates_zoom(analyzer: PFCAnalyzer, save_dir=None,
-                               batch_idx: int = 1, time_win: float = 5.0,
-                               zoom_window: float = 300.0, ylim=None):
-    """
-    Plot I subgroups zoomed into [DA onset, DA onset + zoom_window] ms.
-    Output file: firing_rates_I_zoom_batch_{batch_idx}.png
-    """
-    _plot_group_rates_zoom(
-        analyzer,
-        group_names=['I-D1', 'I-D2', 'I-Other'],
-        title_prefix="Inhibitory (I)",
-        save_dir=save_dir,
-        batch_idx=batch_idx,
-        time_win=time_win,
-        zoom_window=zoom_window,
-        filename=f"firing_rates_I_zoom_batch_{batch_idx}.png",
-        ylim=ylim,
-    )
-
-
-def plot_raster_figure_zoom(analyzer: PFCAnalyzer, save_dir=None,
-                            batch_idx: int = 1,
-                            target_groups=None,
-                            zoom_window: float = 300.0):
-    """
-    Plot Raster zoomed into [DA onset, DA onset + zoom_window] ms.
-    Output file: raster_zoom_batch_{batch_idx}.png
-
-    Args:
-        analyzer:       PFCAnalyzer instance
-        save_dir:       save directory (Path), None for plt.show()
-        batch_idx:      Batch ID (0=Control, 1=Exp)
-        target_groups:  subgroups to plot, None for all 6
-        zoom_window:    duration after DA onset to display (ms)
-    """
-    if target_groups is None:
-        target_groups = ['E-D1', 'E-D2', 'E-Other', 'I-D1', 'I-D2', 'I-Other']
-
-    da_onset = analyzer.da_onset
-    t_start = 9500.0
-    t_end = 13000.0
-
-    print(f"🔬 Plotting raster zoom [{t_start:.0f}, {t_end:.0f}] ms for Batch {batch_idx}...")
-
-    # --- Get spike data ---
-    all_s = analyzer.data['spikes']
-    mask_batch = all_s[:, 1] == batch_idx
-    spikes_batch = all_s[mask_batch][:, [0, 2]].numpy()   # [time_step, neuron_id]
-
-    if len(spikes_batch) == 0:
-        print("❌ No spikes found for this batch.")
-        return
-
-    ts_ms = spikes_batch[:, 0] * analyzer.dt   # ms
-    neuron_ids = spikes_batch[:, 1]
-
-    # Filter to zoom window
-    mask_time = (ts_ms >= t_start) & (ts_ms <= t_end)
-    ts_ms = ts_ms[mask_time]
-    neuron_ids = neuron_ids[mask_time]
-
-    if len(ts_ms) == 0:
-        print("❌ No spikes in zoom window.")
-        return
-
-    x_data = ts_ms   # absolute time (ms)
-
-    # --- Plot ---
-    fig, ax = plt.subplots(figsize=(16, 9), dpi=150)
-    any_drawn = False
-
-    for grp_name in target_groups:
-        if grp_name not in analyzer.groups:
-            print(f"   ⚠️ Group '{grp_name}' not found, skipping.")
-            continue
-
-        valid_neurons = np.where(analyzer.groups[grp_name])[0]
-        mask_grp = np.isin(neuron_ids, valid_neurons)
-        grp_x = x_data[mask_grp]
-        grp_y = neuron_ids[mask_grp]
-
-        if len(grp_x) == 0:
-            continue
-
-        color = PFCAnalyzer.COLORS.get(grp_name, 'black')
-        ax.scatter(grp_x, grp_y, s=3, color=color,
-                   label=f"{grp_name} ({len(grp_x)} spikes)",
-                   alpha=0.8, linewidths=0, rasterized=True)
-        any_drawn = True
-
-    if not any_drawn:
-        print("❌ ERROR: No spikes drawn in zoom window!")
-        plt.close(fig)
-        return
-
-    # --- E/I boundary ---
-    ax.axhline(analyzer.N_E - 0.5, color='gray', linestyle='-',
-               linewidth=1.0, alpha=0.6)
-    ax.text(t_start + (t_end - t_start) * 0.01, analyzer.N_E - 0.5 + 5,
-            "← I neurons", fontsize=12, color='gray', va='bottom')
-    ax.text(t_start + (t_end - t_start) * 0.01, analyzer.N_E - 0.5 - 5,
-            "E neurons →", fontsize=12, color='gray', va='top')
-
-    # --- DA Onset line ---
-    if batch_idx == 1:
-        ax.axvline(da_onset, color='black', linestyle='--', linewidth=1.5, alpha=0.8)
-        ax.text(da_onset, analyzer.N * 0.98,
-                " DA Onset", fontsize=13, va='top', ha='left', color='black')
-
-    # --- Beautify ---
-    ax.set_xlim(t_start, t_end)
-    ax.set_ylim(-1, analyzer.N)
-    ax.set_xlabel("Time (ms)", fontsize=16)
-    ax.set_ylabel("Neuron ID", fontsize=16)
-    batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
-    ax.set_title(f"Raster Plot — {batch_label}  [{t_start:.0f}–{t_end:.0f} ms]", fontsize=17)
-    ax.grid(True, axis='x', linestyle='--', alpha=0.2)
-    legend = ax.legend(loc='upper right', fontsize=12,
-                       markerscale=4, framealpha=0.85)
-    for handle in legend.legend_handles:
-        handle.set_alpha(1.0)
-        handle._sizes = [30]
-
-    plt.tight_layout()
-
-    # --- Save or show ---
-    if save_dir:
-        save_path = save_dir / f"raster_zoom_batch_{batch_idx}.png"
-        plt.savefig(save_path, bbox_inches='tight', dpi=150)
-        print(f"📊 Raster zoom saved to: {save_path}")
-        plt.close(fig)
-    else:
-        plt.show()

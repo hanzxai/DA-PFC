@@ -397,7 +397,7 @@ def run_batch_network(
     # --- LIF 参数 (与 config.py 一致) ---
     V_rest, V_reset, V_th = -70.0, -75.0, -50.0
     R_base, t_ref, tau_syn = 0.1, 5.0, 5.0
-    bg_mean, bg_std = 190.0, 25.0  # V_ss=-51mV, near threshold, noise-driven firing
+    bg_mean, bg_std = 250.0, 50.0  # [Aligned with Gemini] V_ss=-45mV, super-threshold drive
     C_E, C_I = 250.0, 90.0  # membrane capacitance (pF): E=250, I=90
 
     # --- C_m 向量: (1, N), E 神经元=250, I 神经元=90 ---
@@ -486,7 +486,7 @@ def run_batch_network_stepped(
     # --- LIF 参数 ---
     V_rest, V_reset, V_th = -70.0, -75.0, -50.0
     R_base, t_ref, tau_syn = 0.1, 5.0, 5.0  # R_base unit: GΩ (= mV/pA)
-    bg_mean, bg_std = 190.0, 25.0  # V_ss=-51mV, near threshold, noise-driven firing
+    bg_mean, bg_std = 250.0, 50.0  # [Aligned with Gemini] V_ss=-45mV, super-threshold drive
     C_E, C_I = 250.0, 90.0  # membrane capacitance (pF): E=250, I=90
 
     # --- C_m 向量: (1, N), E 神经元=250, I 神经元=90 ---
@@ -577,6 +577,8 @@ def run_dynamic_d1_kernel(
     Batch 0 = Control (0 nM), Batch 1 = Experiment (da_level nM)
     """
     # --- 药理学常数 (与 config.py 一致) ---
+    BIAS_D1, BIAS_D2 = 3.0, -3.0
+    LAM_D1, LAM_D2 = 0.3, 0.2
     # --- D1 Langmuir 动力学参数 ---
     TAU_ON_D1 = 30876.1
     TAU_OFF_D1 = 164472.5
@@ -593,14 +595,11 @@ def run_dynamic_d1_kernel(
     BETA = 1.0
     EPS_D1, EPS_D2 = 0.15, 0.10   # D1: Gain 增强比例; D2: Gain 减弱比例
     BIAS_D1, BIAS_D2 = 3.0, -3.0
-    LAM_D1, LAM_D2 = 0.3, 0.2
-
-    # --- LIF 参数 ---
     # R_base: 基础膜电阻 (GΩ = mV/pA), V in mV, I in pA
     # τ_m = R_base * C_m: E 神经元 τ_m = 0.1 GΩ * 250 pF = 25 ms
     V_rest, V_reset, V_th = -70.0, -75.0, -50.0
     R_base, tau_syn, t_ref = 0.1, 5.0, 5.0  # R_base unit: GΩ (= mV/pA)
-    bg_mean, bg_std = 190.0, 25.0  # V_ss=-51mV, near threshold, noise-driven firing
+    bg_mean, bg_std = 250.0, 50.0  # [Aligned with Gemini] V_ss=-45mV, super-threshold drive
     C_E, C_I = 250.0, 90.0  # membrane capacitance (pF): E=250, I=90
 
     # --- 初始化 ---
@@ -743,7 +742,7 @@ def run_dynamic_d1_d2_kernel(
     # τ_m = R_base * C_m: E 神经元 τ_m = 0.1 GΩ * 250 pF = 25 ms
     V_rest, V_reset, V_th = -70.0, -75.0, -50.0
     R_base, tau_syn, t_ref = 0.1, 5.0, 5.0  # R_base unit: GΩ (= mV/pA)
-    bg_mean, bg_std = 190.0, 25.0  # V_ss=-51mV, near threshold, noise-driven firing
+    bg_mean, bg_std = 250.0, 50.0  # [Aligned with Gemini] V_ss=-45mV, super-threshold drive
     C_E, C_I = 250.0, 90.0  # membrane capacitance (pF): E=250, I=90
 
     # --- 初始化 ---
@@ -872,7 +871,7 @@ def verify_kernel_params_consistent() -> None:
         # 调节强度
         "EPS_D1":     0.15,
         "EPS_D2":     0.10,
-        "BIAS_D1":    3.0,
+"BIAS_D1":    3.0,
         "BIAS_D2":   -3.0,
         "LAM_D1":     0.3,
         "LAM_D2":     0.2,
@@ -885,8 +884,8 @@ def verify_kernel_params_consistent() -> None:
         "C_I":        90.0,
         "TAU_SYN":    5.0,
         "T_REF":      5.0,
-        "BG_MEAN":    190.0,
-        "BG_STD":     25.0,
+"BG_MEAN":    250.0,
+        "BG_STD":     50.0,
     }
 
     errors: list = []

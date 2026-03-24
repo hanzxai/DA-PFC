@@ -13,20 +13,21 @@ DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 # ==============================================================================
 # 2. 网络结构参数 (Network Architecture)
 # ==============================================================================
-N_E = 800           # 兴奋性神经元数量
-N_I = 200           # 抑制性神经元数量
+N_E = 824           # 兴奋性神经元数量 (82.4%)
+N_I = 176           # 抑制性神经元数量 (17.6%)
 N_TOTAL = N_E + N_I
 
 # 连接概率与权重
-CONN_PROB = 0.20    # 连接概率
-W_EXC = 5.0         # 兴奋性权重 (pA) [换算自BrainPy COBA: 0.6nS → ~14pA, 取中等值]
-W_INH = -25.0       # 抑制性权重 (pA) [换算自BrainPy COBA: 6.7nS → ~54pA, 取中等值]
+# [对齐 Gemini 版本] 稀疏连接 + 弱权重, 等效递归兴奋: 0.02*800*3.0*0.1 ≈ 4.8
+CONN_PROB = 0.02    # 连接概率 (Gemini: 0.02)
+W_EXC = 3.0         # 兴奋性权重 (pA) [Gemini等效: 0.3/R_base=3.0 pA]
+W_INH = -20.0       # 抑制性权重 (pA) [Gemini等效: -2.0/R_base=-20.0 pA]
 
 # 受体表达比例
-FRAC_E_D1 = 0.25    # E 神经元中 D1R 比例
-FRAC_E_D2 = 0.15    # E 神经元中 D2R 比例
-FRAC_I_D1 = 0.30    # I 神经元中 D1R 比例
-FRAC_I_D2 = 0.10    # I 神经元中 D2R 比例
+FRAC_E_D1 = 0.21    # E 神经元中 D1R 比例 (21% of 824 = 173)
+FRAC_E_D2 = 0.25    # E 神经元中 D2R 比例 (25% of 824 = 206)
+FRAC_I_D1 = 0.30    # I 神经元中 D1R 比例 (30% of 176 = 52)
+FRAC_I_D2 = 0.08    # I 神经元中 D2R 比例 (8%  of 176 = 14)
 
 # ==============================================================================
 # 3. LIF 神经元参数 (Leaky Integrate-and-Fire)
@@ -43,13 +44,16 @@ T_REF = 5.0         # 不应期 (ms)
 # 背景输入
 # V_ss = V_rest + R_base * I_bg = -70 + 0.1 * 190 = -51 mV ≈ V_th(-50mV)
 # 噪声: BG_STD=25 pA → σ_V = R_base * BG_STD = 0.1 * 25 = 2.5 mV，可有效驱动自发发放
-BG_MEAN = 190.0     # 背景电流均值 (pA)  [V_ss=-51mV，near threshold，noise-driven firing]
-BG_STD = 25.0       # 背景电流标准差 (pA)  [σ_V~0.6mV(I)/0.36mV(E)，noise-driven firing]
+# [对齐 Gemini 版本] Gemini: bg_mean=25, bg_std=5 (无量纲)
+# 等效换算: V_ss = V_rest + R_base * bg_mean = -70 + 0.1*250 = -45 mV (超阈值)
+# 噪声: R_base * bg_std = 0.1 * 50 = 5 mV (与 Gemini 相同比例)
+BG_MEAN = 250.0     # 背景电流均值 (pA)  [V_ss=-45mV, 与Gemini等效超阈值驱动]
+BG_STD = 50.0       # 背景电流标准差 (pA)  [噪声幅度与Gemini等效]
 
 # ==============================================================================
 # 4. 仿真参数 (Simulation)
 # ==============================================================================
-DT = 1.0            # 时间步长 (ms)
+DT = 1.0            # 时间步长 (ms) [暂时用1.0快速测试, 后续可改0.1提高精度]
 DEFAULT_DURATION = 15000.0  # 默认仿真时长 (ms)
 DEFAULT_DA_ONSET = 10000.0  # 默认给药时间 (ms)  [必须 < DEFAULT_DURATION]
 RANDOM_SEED = 42             # 随机种子
