@@ -37,3 +37,11 @@ project_report.txt
 analyze_exp.py
 analyze_quick.py
 analyze_exp_results.py
+
+# --- 其他临时文件 ---
+_log.txt
+_out.txt
+_push.txt
+push_result.txt
+test_out.txt
+*.tmp

@@ -2,24 +2,51 @@
 """
 DA-PFC 仿真主入口 (SNN Simulation)
 
-使用方法示例 (Usage Examples):
-  1. 使用默认参数运行 (GPU 0, 100秒, 3.0 nM DA):
-     python main.py
+============================================================
+ 命令行参数 (CLI Arguments)
+============================================================
+  --da        : DA 浓度 (nM), 默认 3.0
+  --duration  : 仿真总时长 (s), 默认 100
+  --gpu       : GPU 卡号, 默认 0 (无效值自动回退 CPU)
+  --batch     : 绘图 Batch ID (0=Control, 1=Exp), 默认 1
+  --resume    : 从 checkpoint pkl 恢复仿真, 指定 pkl 路径
+  --save-ckpt : 仿真结束后保存 checkpoint 到 checkpoints/ (默认不保存)
+  --da2       : 两阶段模式: 第二阶段 DA 浓度 (nM)
+  --phase2-onset : 两阶段模式: 第二阶段起始时间 (s)
 
-  2. 指定 DA 浓度为 4.0 nM:
-     python main.py --da 4.0
+============================================================
+ 使用方法 (Usage Examples)
+============================================================
 
-  3. 指定自定义仿真时间 (如 50 秒) 和 GPU 卡号 (如使用 GPU 1):
-     python main.py --duration 50 --da 3.0 --gpu 1
+  1) 基础仿真 — 单一 DA 浓度:
+     python main.py --da 2.0 --duration 500
+     # DA=2nM, 仿真 500s
 
-  4. 如果因为显卡被占用或没有显卡，想用或被迫回退到 CPU:
-     python main.py --gpu 999  # 无效 GPU 号会自动回退到 CPU 进行计算
+  1b) 基础仿真 + 保存 checkpoint (供后续 --resume 使用):
+     python main.py --da 2.0 --duration 500 --save-ckpt
+     # 完成后额外保存 checkpoint 到 checkpoints/
 
-支持的主要命令行参数:
-  --duration : 仿真总时长 (s)，默认 100
-  --da       : 目标给药浓度 (nM)，默认 3.0
-  --batch    : 绘图 Batch ID (0=Control, 1=Exp)，默认 1
-  --gpu      : 运行的 GPU 卡号，默认 0
+  2) 从 checkpoint 恢复 — 切换到新 DA 浓度:
+     python main.py --resume checkpoints/ckpt_DA2nM_500s.pkl --da 15.0
+     # 载入 DA=2nM 稳态, 施加 DA=15nM 继续仿真 100s (默认)
+     # 可加 --duration 200 指定恢复后的仿真时长
+
+  3) 两阶段给药 — 同一次仿真内切换 DA:
+     python main.py --da 2.0 --da2 15.0
+     # 第一阶段 DA=2nM, 第二阶段 DA=15nM
+     # 可加 --phase2-onset 30 指定第二阶段起始时间(s)
+
+  4) 指定 GPU / 回退 CPU:
+     python main.py --da 3.0 --gpu 1     # 使用 GPU 1
+     python main.py --da 3.0 --gpu 999   # 无效号 → 自动 CPU
+
+============================================================
+ Checkpoint 机制说明
+============================================================
+  - 默认不保存 checkpoint, 需要时加 --save-ckpt 显式指定
+    文件名格式: ckpt_DA{da}nM_{duration}s.pkl
+    内容: final_state tensor + config dict (体积很小, ~24KB)
+  - checkpoints/ 目录应纳入 git 管理, 方便 clone 后直接使用
 """
 import argparse
 import time
@@ -63,6 +90,8 @@ def parse_args():
                         help="绘图 Batch ID (0=Control, 1=Exp), 默认 1")
     parser.add_argument("--gpu", type=int, default=0,
                         help="GPU卡号, 默认 0. 无GPU或输入无效将回退到CPU")
+    parser.add_argument("--save-ckpt", action="store_true", default=False,
+                        help="仿真结束后保存 checkpoint 到 checkpoints/ 目录 (默认不保存)")
     return parser.parse_args()
 
 
@@ -157,10 +186,11 @@ def main():
     # 4. 保存原始数据
     t_save_start = time.time()
     save_raw_data(data, save_dir)
-    # 额外保存 checkpoint 到 checkpoints/ 文件夹, 方便后续 --resume 复用
-    actual_duration_s = data['config']['duration'] / 1000.0
-    actual_da = data['config'].get('da_level', args.da)
-    save_checkpoint(data, da_level=actual_da, duration_s=actual_duration_s)
+    # 仅在用户显式指定 --save-ckpt 时保存 checkpoint
+    if args.save_ckpt:
+        actual_duration_s = data['config']['duration'] / 1000.0
+        actual_da = data['config'].get('da_level', args.da)
+        save_checkpoint(data, da_level=actual_da, duration_s=actual_duration_s)
     t_save_elapsed = time.time() - t_save_start
 
     # 5. 分析与绘图
