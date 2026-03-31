@@ -3,9 +3,10 @@
 # ============================================
 
 # --- 仿真输出 (数据文件太大, 不应入库) ---
-outputs/
-# 但保留 sweep 结果 (JSON + PNG, 体积小且有科学价值)
+# 忽略 outputs 下的所有内容, 但保留 sweep 结果
+outputs/*
 !outputs/sweep_*/
+outputs/sweep_*/*
 !outputs/sweep_*/*.json
 !outputs/sweep_*/*.png
 
