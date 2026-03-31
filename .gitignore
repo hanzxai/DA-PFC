@@ -4,6 +4,10 @@
 
 # --- 仿真输出 (数据文件太大, 不应入库) ---
 outputs/
+# 但保留 sweep 结果 (JSON + PNG, 体积小且有科学价值)
+!outputs/sweep_*/
+!outputs/sweep_*/*.json
+!outputs/sweep_*/*.png
 
 # --- Python 缓存 ---
 __pycache__/
@@ -45,3 +49,10 @@ _push.txt
 push_result.txt
 test_out.txt
 *.tmp
+
+# --- Sweep 临时文件 ---
+sweep_check.txt
+sweep_final.txt
+sweep_pid.txt
+sweep_progress.txt
+sweep_status.txt
