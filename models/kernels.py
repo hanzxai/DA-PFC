@@ -831,7 +831,307 @@ def run_dynamic_d1_d2_kernel(
             t_last_spike[spikes] = torch.tensor(current_time, device=W_t.device)
             I_syn += torch.matmul(spikes.float(), W_t)
 
-    return spike_records[:spike_count], v_traces
+    # Pack final state for checkpoint: V(2,N), I_syn(2,N), t_last_spike(2,N), alpha_d1(2,1), alpha_d2(2,1)
+    # Concatenate along dim=1: (2, N+N+N+1+1) = (2, 3N+2)
+    final_state = torch.cat([V, I_syn, t_last_spike, alpha_d1, alpha_d2], dim=1)
+    return spike_records[:spike_count], v_traces, final_state
+
+
+# ======================================================================
+# 内核 5: D1 + D2 受体动力学 — 两阶段给药
+#   Phase 1: [0, da_onset)          → 0 nM (baseline, no DA)
+#   Phase 2: [da_onset, phase2_onset) → da_level_1 nM (resting-state DA)
+#   Phase 3: [phase2_onset, end)    → da_level_2 nM (new DA challenge)
+#
+#   Control batch (Batch 0) always stays at 0 nM.
+#   Experiment batch (Batch 1) follows the 3-phase schedule above.
+#
+#   This kernel simulates the scenario where the cortex is first
+#   equilibrated under a resting-state DA tone (e.g. 2 nM), and then
+#   a sudden DA increase (e.g. 15 nM) is applied on top of the
+#   already-active receptor state.
+# ======================================================================
+@torch.jit.script
+def run_dynamic_d1_d2_kernel_two_stage(
+    W_t: torch.Tensor,
+    mask_d1: torch.Tensor,
+    mask_d2: torch.Tensor,
+    da_level_1: float,
+    da_level_2: float,
+    da_onset: float,
+    phase2_onset: float,
+    duration: float,
+    dt: float,
+    record_indices: torch.Tensor,
+    n_exc: int,
+):
+    """
+    D1 + D2 receptor kinetics kernel with two-stage DA dosing.
+
+    DA schedule for Experiment batch (Batch 1):
+      [0, da_onset)          → 0 nM
+      [da_onset, phase2_onset) → da_level_1 nM  (resting-state DA)
+      [phase2_onset, end)    → da_level_2 nM  (DA challenge)
+
+    Control batch (Batch 0) always receives 0 nM.
+    """
+    # --- Pharmacology constants ---
+    EC50_D1 = 4.0
+    EC50_D2 = 8.0
+    BETA = 1.0
+    EPS_D1, EPS_D2 = 0.15, 0.10
+    BIAS_D1, BIAS_D2 = 3.0, -3.0
+    LAM_D1, LAM_D2 = 0.3, 0.2
+    # --- D1 Langmuir kinetics ---
+    TAU_ON_D1 = 30876.1
+    TAU_OFF_D1 = 164472.5
+    k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
+    k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
+    # --- D2 Langmuir kinetics ---
+    TAU_ON_D2 = 10000.0
+    TAU_OFF_D2 = 50000.0
+    k_on_d2  = 1.0 / TAU_ON_D2
+    k_off_d2 = 1.0 / TAU_OFF_D2
+
+    # --- LIF parameters ---
+    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
+    R_base, tau_syn, t_ref = 0.1, 5.0, 5.0
+    bg_mean, bg_std = 250.0, 50.0
+    C_E, C_I = 250.0, 90.0
+
+    # --- Initialization ---
+    N = W_t.shape[0]
+    batch_size = 2
+    steps = int(duration / dt)
+
+    C_m = torch.full((1, N), C_I, device=W_t.device)
+    C_m[0, :n_exc] = C_E
+
+    V_init = torch.rand((1, N), device=W_t.device) * (V_th - V_reset) + V_reset
+    V = V_init.expand(batch_size, -1).clone()
+    t_last_spike = torch.full((batch_size, N), -1000.0, device=W_t.device)
+    I_syn = torch.zeros((batch_size, N), device=W_t.device)
+    alpha_d1 = torch.zeros((batch_size, 1), device=W_t.device)
+    alpha_d2 = torch.zeros((batch_size, 1), device=W_t.device)
+
+    decay_factor = float(torch.exp(torch.tensor(-dt / tau_syn)))
+
+    max_spikes = int(steps * N * batch_size * 0.15)
+    spike_records = torch.zeros((max_spikes, 3), device=W_t.device, dtype=torch.long)
+    spike_count = 0
+    num_record = record_indices.shape[0]
+    v_traces = torch.zeros((steps, num_record), device=W_t.device)
+
+    # --- Time-step loop ---
+    for i in range(steps):
+        current_time = i * dt
+
+        # A. Current DA concentration (two-stage schedule)
+        current_da_val = 0.0
+        if current_time >= phase2_onset:
+            current_da_val = float(da_level_2)
+        elif current_time >= da_onset:
+            current_da_val = float(da_level_1)
+        da_t = torch.tensor([[0.0], [current_da_val]], device=W_t.device)
+
+        # B. Update alpha_D1 (Langmuir receptor binding kinetics)
+        alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1)
+
+        # C. Update alpha_D2 (Langmuir receptor binding kinetics)
+        alpha_d2 = compute_alpha_d2_step_langmuir(alpha_d2, da_t, current_time, da_onset, dt, k_on_d2, k_off_d2)
+
+        # D. Assemble modulation parameters
+        mod_R = R_base * (torch.ones((batch_size, N), device=W_t.device)
+                          + (EPS_D1 * alpha_d1) * mask_d1
+                          - (EPS_D2 * alpha_d2) * mask_d2)
+        I_mod = torch.zeros((batch_size, N), device=W_t.device)
+        scale_syn = torch.ones((batch_size, N), device=W_t.device)
+
+        I_mod += (BIAS_D1 * alpha_d1) * mask_d1
+        scale_syn += (LAM_D1 * alpha_d1) * mask_d1
+
+        I_mod += (BIAS_D2 * alpha_d2) * mask_d2
+        scale_syn -= (LAM_D2 * alpha_d2) * mask_d2
+
+        # E. LIF exact integration
+        I_syn = I_syn * decay_factor
+        I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
+        I_total = (I_syn * scale_syn) + I_bg + I_mod
+
+        R_eff = mod_R
+        V_inf = V_rest + R_eff * I_total
+        tau_m = R_eff * C_m
+        decay_v = torch.exp(-dt / tau_m)
+        V_new = V_inf + (V - V_inf) * decay_v
+        is_refractory = (current_time - t_last_spike) <= t_ref
+        V = torch.where(is_refractory, torch.tensor(V_reset, device=W_t.device), V_new)
+
+        for k in range(num_record):
+            v_traces[i, k] = V[record_indices[k, 0], record_indices[k, 1]]
+
+        spikes = V > V_th
+        if spikes.any():
+            indices = torch.nonzero(spikes)
+            num_now = indices.shape[0]
+            if spike_count + num_now < max_spikes:
+                spike_records[spike_count : spike_count + num_now, 0] = i
+                spike_records[spike_count : spike_count + num_now, 1] = indices[:, 0]
+                spike_records[spike_count : spike_count + num_now, 2] = indices[:, 1]
+                spike_count += num_now
+            V[spikes] = V_reset
+            t_last_spike[spikes] = torch.tensor(current_time, device=W_t.device)
+            I_syn += torch.matmul(spikes.float(), W_t)
+
+    # Pack final state for checkpoint: V(2,N), I_syn(2,N), t_last_spike(2,N), alpha_d1(2,1), alpha_d2(2,1)
+    final_state = torch.cat([V, I_syn, t_last_spike, alpha_d1, alpha_d2], dim=1)
+    return spike_records[:spike_count], v_traces, final_state
+
+
+# ======================================================================
+# 内核 6: D1 + D2 受体动力学 — 从 checkpoint 恢复仿真
+#   从给定的初始状态 (V, I_syn, t_last_spike, alpha_d1, alpha_d2) 开始,
+#   施加新的 DA 浓度继续仿真。
+#   Control batch (Batch 0) 使用 checkpoint 中的 control 状态继续演化 (0 nM)。
+#   Experiment batch (Batch 1) 使用 checkpoint 中的 exp 状态, 施加新 DA。
+# ======================================================================
+@torch.jit.script
+def run_dynamic_d1_d2_kernel_from_state(
+    W_t: torch.Tensor,
+    mask_d1: torch.Tensor,
+    mask_d2: torch.Tensor,
+    init_state: torch.Tensor,
+    da_level: float,
+    da_onset: float,
+    duration: float,
+    dt: float,
+    record_indices: torch.Tensor,
+    n_exc: int,
+):
+    """
+    D1 + D2 receptor kinetics kernel resuming from a checkpoint state.
+
+    Args:
+        init_state: (2, 3N+2) packed tensor from a previous kernel's final_state.
+                    Layout: [V(2,N) | I_syn(2,N) | t_last_spike(2,N) | alpha_d1(2,1) | alpha_d2(2,1)]
+        da_level:   New DA concentration (nM) to apply from da_onset.
+        da_onset:   Time (ms) when new DA starts (relative to this simulation's t=0).
+        duration:   Total simulation time (ms) for this continuation run.
+    """
+    # --- Pharmacology constants ---
+    EC50_D1 = 4.0
+    EC50_D2 = 8.0
+    BETA = 1.0
+    EPS_D1, EPS_D2 = 0.15, 0.10
+    BIAS_D1, BIAS_D2 = 3.0, -3.0
+    LAM_D1, LAM_D2 = 0.3, 0.2
+    # --- D1 Langmuir kinetics ---
+    TAU_ON_D1 = 30876.1
+    TAU_OFF_D1 = 164472.5
+    k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
+    k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
+    # --- D2 Langmuir kinetics ---
+    TAU_ON_D2 = 10000.0
+    TAU_OFF_D2 = 50000.0
+    k_on_d2  = 1.0 / TAU_ON_D2
+    k_off_d2 = 1.0 / TAU_OFF_D2
+
+    # --- LIF parameters ---
+    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
+    R_base, tau_syn, t_ref = 0.1, 5.0, 5.0
+    bg_mean, bg_std = 250.0, 50.0
+    C_E, C_I = 250.0, 90.0
+
+    # --- Unpack initial state ---
+    N = W_t.shape[0]
+    batch_size = 2
+    steps = int(duration / dt)
+
+    C_m = torch.full((1, N), C_I, device=W_t.device)
+    C_m[0, :n_exc] = C_E
+
+    # Unpack: [V | I_syn | t_last_spike | alpha_d1 | alpha_d2]
+    V = init_state[:, :N].clone()
+    I_syn = init_state[:, N:2*N].clone()
+    t_last_spike = init_state[:, 2*N:3*N].clone()
+    alpha_d1 = init_state[:, 3*N:3*N+1].clone()
+    alpha_d2 = init_state[:, 3*N+1:3*N+2].clone()
+
+    # Reset t_last_spike relative to new t=0 (shift by a large negative offset
+    # so refractory logic works correctly at the start)
+    # The old t_last_spike values are absolute times from the previous run.
+    # We set them to -1000 to ensure no neuron is in refractory at t=0 of the new run.
+    t_last_spike = torch.full((batch_size, N), -1000.0, device=W_t.device)
+
+    decay_factor = float(torch.exp(torch.tensor(-dt / tau_syn)))
+
+    max_spikes = int(steps * N * batch_size * 0.15)
+    spike_records = torch.zeros((max_spikes, 3), device=W_t.device, dtype=torch.long)
+    spike_count = 0
+    num_record = record_indices.shape[0]
+    v_traces = torch.zeros((steps, num_record), device=W_t.device)
+
+    # --- Time-step loop ---
+    for i in range(steps):
+        current_time = i * dt
+
+        # A. Current DA concentration
+        # Control batch always 0 nM; Exp batch gets da_level after da_onset
+        current_da_val = 0.0
+        if current_time >= da_onset:
+            current_da_val = float(da_level)
+        da_t = torch.tensor([[0.0], [current_da_val]], device=W_t.device)
+
+        # B. Update alpha_D1 (Langmuir receptor binding kinetics)
+        alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1)
+
+        # C. Update alpha_D2 (Langmuir receptor binding kinetics)
+        alpha_d2 = compute_alpha_d2_step_langmuir(alpha_d2, da_t, current_time, da_onset, dt, k_on_d2, k_off_d2)
+
+        # D. Assemble modulation parameters
+        mod_R = R_base * (torch.ones((batch_size, N), device=W_t.device)
+                          + (EPS_D1 * alpha_d1) * mask_d1
+                          - (EPS_D2 * alpha_d2) * mask_d2)
+        I_mod = torch.zeros((batch_size, N), device=W_t.device)
+        scale_syn = torch.ones((batch_size, N), device=W_t.device)
+
+        I_mod += (BIAS_D1 * alpha_d1) * mask_d1
+        scale_syn += (LAM_D1 * alpha_d1) * mask_d1
+
+        I_mod += (BIAS_D2 * alpha_d2) * mask_d2
+        scale_syn -= (LAM_D2 * alpha_d2) * mask_d2
+
+        # E. LIF exact integration
+        I_syn = I_syn * decay_factor
+        I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
+        I_total = (I_syn * scale_syn) + I_bg + I_mod
+
+        R_eff = mod_R
+        V_inf = V_rest + R_eff * I_total
+        tau_m = R_eff * C_m
+        decay_v = torch.exp(-dt / tau_m)
+        V_new = V_inf + (V - V_inf) * decay_v
+        is_refractory = (current_time - t_last_spike) <= t_ref
+        V = torch.where(is_refractory, torch.tensor(V_reset, device=W_t.device), V_new)
+
+        for k in range(num_record):
+            v_traces[i, k] = V[record_indices[k, 0], record_indices[k, 1]]
+
+        spikes = V > V_th
+        if spikes.any():
+            indices = torch.nonzero(spikes)
+            num_now = indices.shape[0]
+            if spike_count + num_now < max_spikes:
+                spike_records[spike_count : spike_count + num_now, 0] = i
+                spike_records[spike_count : spike_count + num_now, 1] = indices[:, 0]
+                spike_records[spike_count : spike_count + num_now, 2] = indices[:, 1]
+                spike_count += num_now
+            V[spikes] = V_reset
+            t_last_spike[spikes] = torch.tensor(current_time, device=W_t.device)
+            I_syn += torch.matmul(spikes.float(), W_t)
+
+    # Pack final state
+    final_state = torch.cat([V, I_syn, t_last_spike, alpha_d1, alpha_d2], dim=1)
+    return spike_records[:spike_count], v_traces, final_state
 
 
 # ======================================================================

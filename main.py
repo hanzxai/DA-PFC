@@ -25,13 +25,13 @@ import argparse
 import time
 import torch
 import config
-from simulation.runners import run_simulation_d1_d2_kinetics
+from simulation.runners import run_simulation_d1_d2_kinetics, run_simulation_d1_d2_two_stage, run_simulation_from_checkpoint
 from analysis.analyzer import PFCAnalyzer
 from analysis.plotting import (plot_combined_raster,
                                 plot_combined_rates_all,
                                 plot_combined_rates_E,
                                 plot_combined_rates_I)
-from utils import setup_experiment_folder, save_args, save_raw_data
+from utils import setup_experiment_folder, save_args, save_raw_data, save_checkpoint
 
 
 def _fmt_elapsed(seconds: float) -> str:
@@ -51,6 +51,14 @@ def parse_args():
                         help="仿真总时长 (s), 默认 100")
     parser.add_argument("--da", type=float, default=3.0,
                         help="给药浓度 (nM), 默认 3.0")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="从checkpoint恢复仿真: 指定raw_data.pkl路径. "
+                             "加载之前仿真的最终状态, 施加--da指定的新DA浓度")
+    parser.add_argument("--da2", type=float, default=None,
+                        help="两阶段模式: 第二阶段DA浓度 (nM). 指定此参数时启用两阶段给药, "
+                             "--da 作为静息态DA浓度, --da2 作为挑战DA浓度")
+    parser.add_argument("--phase2-onset", type=float, default=None,
+                        help="两阶段模式: 第二阶段DA开始时间 (s), 默认=da_onset+20s")
     parser.add_argument("--batch", type=int, default=1,
                         help="绘图 Batch ID (0=Control, 1=Exp), 默认 1")
     parser.add_argument("--gpu", type=int, default=0,
@@ -78,30 +86,81 @@ def main():
 
     # 将秒转换为毫秒
     duration_ms = args.duration * 1000.0
+    phase2_onset_ms = args.phase2_onset * 1000.0 if args.phase2_onset is not None else None
+
+    # 判断运行模式
+    resume_mode = args.resume is not None
+    two_stage = args.da2 is not None and not resume_mode
+    # 判断用户是否显式指定了 duration (默认值为 100.0)
+    user_specified_duration = (args.duration != 100.0)
 
     # 2. 实验配置
-    exp_config = {
-        "duration": duration_ms,
-        "target_da": args.da,
-        "dt": config.DT,
-        "device": str(device),
-        "note": f"D1+D2 受体动力学 (D1 Tau_on={config.TAU_ON_D1}ms, D2 Tau_on={config.TAU_ON_D2}ms, DA={args.da}nM, Duration={args.duration}s)",
-    }
+    if resume_mode:
+        exp_config = {
+            "duration": duration_ms if user_specified_duration else "auto",
+            "checkpoint": args.resume,
+            "new_da": args.da,
+            "dt": config.DT,
+            "device": str(device),
+            "note": f"Resume from checkpoint, new DA={args.da}nM",
+        }
+    elif two_stage:
+        exp_config = {
+            "duration": duration_ms if user_specified_duration else "auto",
+            "da_level_1": args.da,
+            "da_level_2": args.da2,
+            "phase2_onset": phase2_onset_ms if phase2_onset_ms else "auto",
+            "dt": config.DT,
+            "device": str(device),
+            "note": (f"Two-Stage DA: {args.da}nM → {args.da2}nM "
+                     f"(D1 Tau_on={config.TAU_ON_D1}ms, D2 Tau_on={config.TAU_ON_D2}ms)"),
+        }
+    else:
+        exp_config = {
+            "duration": duration_ms,
+            "target_da": args.da,
+            "dt": config.DT,
+            "device": str(device),
+            "note": f"D1+D2 受体动力学 (D1 Tau_on={config.TAU_ON_D1}ms, D2 Tau_on={config.TAU_ON_D2}ms, DA={args.da}nM, Duration={args.duration}s)",
+        }
     save_args(exp_config, save_dir)
 
     # 3. 运行仿真
     print(f"🚀 Starting Experiment: {exp_config['note']}")
     t_sim_start = time.time()
-    data = run_simulation_d1_d2_kinetics(
-        duration=duration_ms,
-        target_da=args.da,
-        device=device,
-    )
+    if resume_mode:
+        # Resume from checkpoint mode
+        data = run_simulation_from_checkpoint(
+            checkpoint_path=args.resume,
+            duration=duration_ms if user_specified_duration else None,
+            da_level=args.da,
+            device=device,
+        )
+    elif two_stage:
+        # Two-stage DA dosing mode
+        data = run_simulation_d1_d2_two_stage(
+            duration=duration_ms if user_specified_duration else None,
+            da_level_1=args.da,
+            da_level_2=args.da2,
+            phase2_onset=phase2_onset_ms,
+            device=device,
+        )
+    else:
+        # Standard single-stage DA mode
+        data = run_simulation_d1_d2_kinetics(
+            duration=duration_ms,
+            target_da=args.da,
+            device=device,
+        )
     t_sim_elapsed = time.time() - t_sim_start
 
     # 4. 保存原始数据
     t_save_start = time.time()
     save_raw_data(data, save_dir)
+    # 额外保存 checkpoint 到 checkpoints/ 文件夹, 方便后续 --resume 复用
+    actual_duration_s = data['config']['duration'] / 1000.0
+    actual_da = data['config'].get('da_level', args.da)
+    save_checkpoint(data, da_level=actual_da, duration_s=actual_duration_s)
     t_save_elapsed = time.time() - t_save_start
 
     # 5. 分析与绘图

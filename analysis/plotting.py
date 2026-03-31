@@ -30,11 +30,39 @@ from analysis.analyzer import PFCAnalyzer
 
 
 # ---------------------------------------------------------------------------
-# Helper: draw DA onset vertical line
+# Helper: draw DA onset vertical line(s)
 # ---------------------------------------------------------------------------
-def _draw_onset_line(ax, onset_x, ylim_top):
-    ax.axvline(onset_x, color='black', linestyle='--', alpha=0.6, linewidth=1.8)
-    ax.text(onset_x, ylim_top * 0.97, " DA", fontsize=16, va='top', color='black')
+def _draw_onset_line(ax, onset_x, ylim_top, label=" DA", color='black'):
+    ax.axvline(onset_x, color=color, linestyle='--', alpha=0.6, linewidth=1.8)
+    ax.text(onset_x, ylim_top * 0.97, label, fontsize=14, va='top', color=color,
+            fontweight='bold')
+
+
+def _draw_two_stage_lines(ax, analyzer, use_seconds=True):
+    """Draw two vertical lines for two-stage DA dosing mode."""
+    cfg = analyzer.cfg
+    if cfg.get('mode') != 'dynamic_d1_d2_two_stage':
+        return False
+
+    phase1_onset = cfg.get('phase1_da_onset')  # when resting DA starts
+    phase2_onset = cfg.get('phase2_onset')      # when DA challenge starts
+    da1 = cfg.get('da_level_1', 0)
+    da2 = cfg.get('da_level_2', 0)
+
+    if phase1_onset is None or phase2_onset is None:
+        return False
+
+    ylim_top = ax.get_ylim()[1]
+    if use_seconds:
+        x1 = phase1_onset / 1000.0
+        x2 = phase2_onset / 1000.0
+    else:
+        x1 = phase1_onset
+        x2 = phase2_onset
+
+    _draw_onset_line(ax, x1, ylim_top, label=f" DA={da1}nM", color='#2196F3')
+    _draw_onset_line(ax, x2, ylim_top, label=f" DA={da2}nM", color='#F44336')
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +182,12 @@ def plot_combined_raster(analyzer: PFCAnalyzer, save_dir=None,
             else:
                 ax.set_xlim(0, x_max_full)
                 ax.set_xlabel(x_label_full)
-                if batch_idx == 1 and onset_full > 0:
-                    _draw_onset_line(ax, onset_full, analyzer.N)
+                # Draw vertical lines: two-stage mode draws 2 lines, single-stage draws 1
+                if batch_idx == 1:
+                    use_sec = analyzer.duration > 10000
+                    if not _draw_two_stage_lines(ax, analyzer, use_seconds=use_sec):
+                        if onset_full > 0:
+                            _draw_onset_line(ax, onset_full, analyzer.N)
 
             if col == 0:
                 ax.set_ylabel("Neuron ID")
@@ -308,8 +340,11 @@ def _plot_combined_rates(analyzer: PFCAnalyzer, group_names: list,
                     onset_x = da_onset
                 if ylim_full:
                     ax.set_ylim(ylim_full[0], ylim_full[1])
-                if onset_x > 0:
-                    _draw_onset_line(ax, onset_x, ax.get_ylim()[1])
+                # Draw vertical lines: two-stage mode draws 2 lines, single-stage draws 1
+                use_sec = analyzer.duration > 10000
+                if not _draw_two_stage_lines(ax, analyzer, use_seconds=use_sec):
+                    if onset_x > 0:
+                        _draw_onset_line(ax, onset_x, ax.get_ylim()[1])
 
             if col == 0:
                 ax.set_ylabel("Firing Rate (Hz)")
@@ -318,7 +353,13 @@ def _plot_combined_rates(analyzer: PFCAnalyzer, group_names: list,
             ax.grid(True, linestyle='--', alpha=0.3)
 
             # Title
-            batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
+            cfg_mode = analyzer.cfg.get('mode', '')
+            if cfg_mode == 'dynamic_d1_d2_two_stage':
+                da1 = analyzer.cfg.get('da_level_1', 0)
+                da2 = analyzer.cfg.get('da_level_2', 0)
+                batch_label = "Control" if batch_idx == 0 else f"Exp ({da1}→{da2} nM)"
+            else:
+                batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
             ax.set_title(f"{title_prefix} — {batch_label} ({row_label})")
 
             # Legend only on top-left panel to save space

@@ -28,3 +28,38 @@ def save_raw_data(data: dict, save_dir: Path, filename: str = "raw_data.pkl"):
     with open(file_path, "wb") as f:
         pickle.dump(data, f)
     print(f"💾 Raw data saved to {file_path}")
+
+
+def save_checkpoint(data: dict, da_level: float, duration_s: float,
+                    base_dir: str = "checkpoints"):
+    """
+    Save checkpoint (final_state + config) to a shared checkpoints/ folder.
+
+    The file is named with DA level and duration for easy identification, e.g.:
+        checkpoints/ckpt_DA2.0nM_500s.pkl
+
+    This allows --resume to reference a stable path that won't change
+    between experiment runs.
+    """
+    if 'final_state' not in data:
+        print("⚠️  No final_state in data, skipping checkpoint save.")
+        return None
+
+    ckpt_dir = Path(base_dir)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build descriptive filename
+    da_str = f"{da_level}".rstrip('0').rstrip('.')
+    dur_str = f"{int(duration_s)}" if duration_s == int(duration_s) else f"{duration_s:.1f}"
+    filename = f"ckpt_DA{da_str}nM_{dur_str}s.pkl"
+    file_path = ckpt_dir / filename
+
+    # Save only the essential data for resuming (much smaller than full raw_data.pkl)
+    ckpt_data = {
+        'config': data['config'],
+        'final_state': data['final_state'],
+    }
+    with open(file_path, "wb") as f:
+        pickle.dump(ckpt_data, f)
+    print(f"💾 Checkpoint saved to {file_path}")
+    return file_path

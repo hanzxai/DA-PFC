@@ -16,6 +16,8 @@ from models.kernels import (
     run_batch_network_stepped,
     run_dynamic_d1_kernel,
     run_dynamic_d1_d2_kernel,
+    run_dynamic_d1_d2_kernel_two_stage,
+    run_dynamic_d1_d2_kernel_from_state,
     verify_kernel_params_consistent,
 )
 from models.pharmacology import get_batch_modulation_params, get_stepped_modulation_params
@@ -60,9 +62,10 @@ def _build_record_indices(groups_info: dict, device: torch.device, full: bool = 
     return torch.tensor(indices, device=device, dtype=torch.long)
 
 
-def _pack_data(cfg_dict, mask_d1, mask_d2, groups_info, spikes, v_traces, record_indices):
+def _pack_data(cfg_dict, mask_d1, mask_d2, groups_info, spikes, v_traces, record_indices,
+               final_state=None):
     """将仿真结果统一打包为 CPU dict, 供 Analyzer 使用。"""
-    return {
+    data = {
         'config': cfg_dict,
         'masks': {
             'd1': mask_d1.cpu(),
@@ -73,6 +76,9 @@ def _pack_data(cfg_dict, mask_d1, mask_d2, groups_info, spikes, v_traces, record
         'v_traces': v_traces.cpu(),
         'record_indices': record_indices.cpu(),
     }
+    if final_state is not None:
+        data['final_state'] = final_state.cpu()
+    return data
 
 
 def _sync_and_report(t0: float):
@@ -320,7 +326,7 @@ def run_simulation_d1_d2_kinetics(duration: float = None, target_da: float = Non
     record_indices = _build_record_indices(groups_info, device, full=True)
 
     t0 = time.time()
-    all_spikes, v_traces = _run_kernel_with_progress(
+    all_spikes, v_traces, final_state = _run_kernel_with_progress(
         run_dynamic_d1_d2_kernel,
         (W_t, mask_d1, mask_d2,
          float(target_da), float(da_onset), float(duration), dt,
@@ -338,4 +344,184 @@ def run_simulation_d1_d2_kinetics(duration: float = None, target_da: float = Non
         },
         mask_d1=mask_d1, mask_d2=mask_d2, groups_info=groups_info,
         spikes=all_spikes, v_traces=v_traces, record_indices=record_indices,
+        final_state=final_state,
+    )
+
+
+# ==============================================================================
+# Runner 5: D1 + D2 受体动力学 — 两阶段给药
+#   模拟静息态 DA 浓度下的网络稳态, 然后突然施加新的 DA 浓度
+# ==============================================================================
+
+def run_simulation_d1_d2_two_stage(
+    duration: float = None,
+    da_level_1: float = 2.0,
+    da_level_2: float = 15.0,
+    phase2_onset: float = None,
+    device: torch.device = None,
+):
+    """
+    Two-stage DA dosing simulation:
+      Phase 1: [0, da_onset)            → 0 nM (baseline)
+      Phase 2: [da_onset, phase2_onset) → da_level_1 nM (resting-state DA)
+      Phase 3: [phase2_onset, end)      → da_level_2 nM (DA challenge)
+
+    Args:
+        duration     : Total simulation time (ms). Default 210s.
+        da_level_1   : Resting-state DA concentration (nM). Default 2.0.
+        da_level_2   : Challenge DA concentration (nM). Default 15.0.
+        phase2_onset : Time (ms) when DA switches from level_1 to level_2.
+                       Default = da_onset + 100000 (100s after first DA).
+        device       : Torch device.
+    """
+    if device is None:
+        device = config.DEVICE
+
+    dt = config.DT
+    da_onset = config.DEFAULT_DA_ONSET  # 10000 ms = 10s
+
+    # Default phase2_onset: 20s after da_onset (let resting DA stabilize)
+    if phase2_onset is None:
+        phase2_onset = da_onset + 20000.0  # 30s mark
+
+    # Default duration: phase2_onset + 100s (observe DA challenge for 100s)
+    if duration is None:
+        duration = phase2_onset + 100000.0  # 130s total
+
+    print(f"🚀 Simulation running on {device}")
+    print(f"   Mode: Two-Stage DA Dosing (D1 + D2 Kinetics)")
+    print(f"   Phase 1: [0, {da_onset:.0f}ms) → 0 nM (baseline)")
+    print(f"   Phase 2: [{da_onset:.0f}ms, {phase2_onset:.0f}ms) → {da_level_1} nM (resting DA)")
+    print(f"   Phase 3: [{phase2_onset:.0f}ms, {duration:.0f}ms) → {da_level_2} nM (DA challenge)")
+    print(f"   Total duration: {duration/1000:.1f}s")
+
+    W_t, mask_d1, mask_d2, groups_info = _init_network(device)
+    record_indices = _build_record_indices(groups_info, device, full=True)
+
+    t0 = time.time()
+    all_spikes, v_traces, final_state = _run_kernel_with_progress(
+        run_dynamic_d1_d2_kernel_two_stage,
+        (W_t, mask_d1, mask_d2,
+         float(da_level_1), float(da_level_2),
+         float(da_onset), float(phase2_onset),
+         float(duration), dt,
+         record_indices, config.N_E),
+        duration, dt,
+    )
+    _sync_and_report(t0)
+
+    return _pack_data(
+        cfg_dict={
+            'N_E': config.N_E, 'N_I': config.N_I,
+            'duration': duration, 'dt': dt,
+            'da_onset': phase2_onset,     # Analyzer uses this as the split point
+            'da_level': da_level_2,       # primary DA level for analysis
+            'da_level_1': da_level_1,     # resting-state DA
+            'da_level_2': da_level_2,     # challenge DA
+            'phase1_da_onset': da_onset,  # when resting DA starts
+            'phase2_onset': phase2_onset, # when DA challenge starts
+            'mode': 'dynamic_d1_d2_two_stage',
+        },
+        mask_d1=mask_d1, mask_d2=mask_d2, groups_info=groups_info,
+        spikes=all_spikes, v_traces=v_traces, record_indices=record_indices,
+        final_state=final_state,
+    )
+
+
+# ==============================================================================
+# Runner 6: 从 checkpoint 恢复仿真 (方案二)
+#   加载之前仿真保存的 raw_data.pkl 中的 final_state,
+#   以此作为初始状态继续仿真, 施加新的 DA 浓度。
+# ==============================================================================
+
+def run_simulation_from_checkpoint(
+    checkpoint_path: str,
+    duration: float = None,
+    da_level: float = 15.0,
+    da_onset: float = None,
+    device: torch.device = None,
+):
+    """
+    Resume simulation from a checkpoint (raw_data.pkl).
+
+    Loads the final_state from a previous simulation and continues
+    with a new DA concentration.
+
+    Args:
+        checkpoint_path : Path to the raw_data.pkl file from a previous run.
+        duration        : Simulation time (ms) for this continuation. Default 100s.
+        da_level        : New DA concentration (nM). Default 15.0.
+        da_onset        : Time (ms) when new DA starts (relative to t=0 of this run).
+                          Default = DEFAULT_DA_ONSET (10s).
+        device          : Torch device.
+    """
+    import pickle
+
+    if device is None:
+        device = config.DEVICE
+
+    # Load checkpoint
+    print(f"📂 Loading checkpoint from: {checkpoint_path}")
+    with open(checkpoint_path, 'rb') as f:
+        ckpt_data = pickle.load(f)
+
+    if 'final_state' not in ckpt_data:
+        raise ValueError(
+            "Checkpoint does not contain 'final_state'. "
+            "Please re-run the source simulation with the updated code to save final_state."
+        )
+
+    ckpt_cfg = ckpt_data['config']
+    prev_da = ckpt_cfg.get('da_level', 'unknown')
+    prev_mode = ckpt_cfg.get('mode', 'unknown')
+    prev_duration = ckpt_cfg.get('duration', 'unknown')
+
+    print(f"   Previous run: mode={prev_mode}, DA={prev_da}nM, duration={prev_duration}ms")
+
+    # Defaults
+    if duration is None:
+        duration = 100000.0  # 100s
+    if da_onset is None:
+        da_onset = config.DEFAULT_DA_ONSET  # 10s
+
+    dt = config.DT
+
+    print(f"🚀 Simulation running on {device}")
+    print(f"   Mode: Resume from Checkpoint")
+    print(f"   Loaded state from: {checkpoint_path}")
+    print(f"   Previous DA: {prev_da}nM → New DA: {da_level}nM")
+    print(f"   Baseline: [0, {da_onset:.0f}ms) → prev DA state (loaded, no change)")
+    print(f"   DA phase: [{da_onset:.0f}ms, {duration:.0f}ms) → {da_level} nM")
+    print(f"   Duration: {duration/1000:.1f}s")
+
+    # Rebuild network (same seed → same W_t)
+    W_t, mask_d1, mask_d2, groups_info = _init_network(device)
+    record_indices = _build_record_indices(groups_info, device, full=True)
+
+    # Move checkpoint state to device
+    init_state = ckpt_data['final_state'].to(device)
+
+    t0 = time.time()
+    all_spikes, v_traces, final_state = _run_kernel_with_progress(
+        run_dynamic_d1_d2_kernel_from_state,
+        (W_t, mask_d1, mask_d2, init_state,
+         float(da_level), float(da_onset), float(duration), dt,
+         record_indices, config.N_E),
+        duration, dt,
+    )
+    _sync_and_report(t0)
+
+    return _pack_data(
+        cfg_dict={
+            'N_E': config.N_E, 'N_I': config.N_I,
+            'duration': duration, 'dt': dt,
+            'da_onset': da_onset, 'da_level': da_level,
+            'mode': 'resume_from_checkpoint',
+            'checkpoint_path': checkpoint_path,
+            'prev_da': prev_da,
+            'prev_mode': prev_mode,
+        },
+        mask_d1=mask_d1, mask_d2=mask_d2, groups_info=groups_info,
+        spikes=all_spikes, v_traces=v_traces, record_indices=record_indices,
+        final_state=final_state,
     )
