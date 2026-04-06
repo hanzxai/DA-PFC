@@ -642,6 +642,157 @@ def run_dynamic_d1_d2_kernel(
 
 
 # ======================================================================
+# 内核 4b: D1 + D2 受体动力学 — Checkpoint 专用
+#   Batch 0 = Control (0 nM, no DA)
+#   Batch 1 = Experiment (da_level nM)
+#
+#   Purpose: Generate a checkpoint at a given DA baseline (e.g. 2 nM).
+#   The control batch stays at 0 nM so the output plot shows the
+#   difference between no-DA and the target DA concentration.
+#   The final_state from Batch 1 can then be loaded by --resume.
+# ======================================================================
+@torch.jit.script
+def run_dynamic_d1_d2_kernel_ckpt(
+    W_t: torch.Tensor,
+    mask_d1: torch.Tensor,
+    mask_d2: torch.Tensor,
+    da_level: float,
+    da_onset: float,
+    duration: float,
+    dt: float,
+    record_indices: torch.Tensor,
+    n_exc: int,
+    params: torch.Tensor,
+):
+    """
+    D1 + D2 receptor kinetics kernel for checkpoint generation.
+    - D1: first-order kinetics (Langmuir)
+    - D2: first-order kinetics (Langmuir)
+    Batch 0 = Control (0 nM, no DA), Batch 1 = Experiment (da_level nM)
+    """
+    # --- Unpack params ---
+    V_rest   = float(params[0])
+    V_reset  = float(params[1])
+    V_th     = float(params[2])
+    R_base   = float(params[3])
+    tau_syn  = float(params[4])
+    t_ref    = float(params[5])
+    bg_mean  = float(params[6])
+    bg_std   = float(params[7])
+    C_E      = float(params[8])
+    C_I      = float(params[9])
+    EC50_D1  = float(params[10])
+    EC50_D2  = float(params[11])
+    BETA     = float(params[12])
+    EPS_D1   = float(params[13])
+    EPS_D2   = float(params[14])
+    BIAS_D1  = float(params[15])
+    BIAS_D2  = float(params[16])
+    LAM_D1   = float(params[17])
+    LAM_D2   = float(params[18])
+    TAU_ON_D1  = float(params[19])
+    TAU_OFF_D1 = float(params[20])
+    TAU_ON_D2  = float(params[21])
+    TAU_OFF_D2 = float(params[22])
+    DA_BASELINE = float(params[23])
+    # --- Derived Langmuir kinetics ---
+    k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
+    k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
+    k_on_d2  = 1.0 / TAU_ON_D2
+    k_off_d2 = 1.0 / TAU_OFF_D2
+
+    # --- Initialization ---
+    N = W_t.shape[0]
+    batch_size = 2
+    steps = int(duration / dt)
+
+    C_m = torch.full((1, N), C_I, device=W_t.device)
+    C_m[0, :n_exc] = C_E
+
+    V_init = torch.rand((1, N), device=W_t.device) * (V_th - V_reset) + V_reset
+    V = V_init.expand(batch_size, -1).clone()
+    t_last_spike = torch.full((batch_size, N), -1000.0, device=W_t.device)
+    I_syn = torch.zeros((batch_size, N), device=W_t.device)
+    alpha_d1 = torch.zeros((batch_size, 1), device=W_t.device)
+    alpha_d2 = torch.zeros((batch_size, 1), device=W_t.device)
+
+    decay_factor = float(torch.exp(torch.tensor(-dt / tau_syn)))
+
+    max_spikes = int(steps * N * batch_size * 0.15)
+    spike_records = torch.zeros((max_spikes, 3), device=W_t.device, dtype=torch.long)
+    spike_count = 0
+    num_record = record_indices.shape[0]
+    v_traces = torch.zeros((steps, num_record), device=W_t.device)
+
+    # --- Time-step loop ---
+    for i in range(steps):
+        current_time = i * dt
+
+        # A. DA concentration: Batch 0 = always 0 nM, Batch 1 = da_level after onset
+        exp_da_val = 0.0
+        if current_time >= da_onset:
+            exp_da_val = float(da_level)
+        da_t = torch.tensor([[0.0], [exp_da_val]], device=W_t.device)
+
+        # B. Update alpha_D1 (Langmuir receptor binding kinetics)
+        alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1, EC50_D1, BETA)
+
+        # C. Update alpha_D2 (Langmuir receptor binding kinetics)
+        alpha_d2 = compute_alpha_d2_step_langmuir(alpha_d2, da_t, current_time, da_onset, dt, k_on_d2, k_off_d2, EC50_D2, BETA)
+
+        # D. Force Batch 0 alpha = 0 (pure no-DA control)
+        #    Sigmoid(0 - EC50) is not exactly 0, so alpha would drift slightly.
+        #    Clamp it to guarantee a flat control baseline.
+        alpha_d1[0, 0] = 0.0
+        alpha_d2[0, 0] = 0.0
+
+        # E. Assemble modulation parameters
+        mod_R = R_base * (torch.ones((batch_size, N), device=W_t.device)
+                          + (EPS_D1 * alpha_d1) * mask_d1
+                          - (EPS_D2 * alpha_d2) * mask_d2)
+        I_mod = torch.zeros((batch_size, N), device=W_t.device)
+        scale_syn = torch.ones((batch_size, N), device=W_t.device)
+
+        I_mod += (BIAS_D1 * alpha_d1) * mask_d1
+        scale_syn += (LAM_D1 * alpha_d1) * mask_d1
+
+        I_mod += (BIAS_D2 * alpha_d2) * mask_d2
+        scale_syn -= (LAM_D2 * alpha_d2) * mask_d2
+
+        # F. LIF exact integration
+        I_syn = I_syn * decay_factor
+        I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
+        I_total = (I_syn * scale_syn) + I_bg + I_mod
+
+        R_eff = mod_R
+        V_inf = V_rest + R_eff * I_total
+        tau_m = R_eff * C_m
+        decay_v = torch.exp(-dt / tau_m)
+        V_new = V_inf + (V - V_inf) * decay_v
+        is_refractory = (current_time - t_last_spike) <= t_ref
+        V = torch.where(is_refractory, torch.tensor(V_reset, device=W_t.device), V_new)
+
+        for k in range(num_record):
+            v_traces[i, k] = V[record_indices[k, 0], record_indices[k, 1]]
+
+        spikes = V > V_th
+        if spikes.any():
+            indices = torch.nonzero(spikes)
+            num_now = indices.shape[0]
+            if spike_count + num_now < max_spikes:
+                spike_records[spike_count : spike_count + num_now, 0] = i
+                spike_records[spike_count : spike_count + num_now, 1] = indices[:, 0]
+                spike_records[spike_count : spike_count + num_now, 2] = indices[:, 1]
+                spike_count += num_now
+            V[spikes] = V_reset
+            t_last_spike[spikes] = torch.tensor(current_time, device=W_t.device)
+            I_syn += torch.matmul(spikes.float(), W_t)
+
+    final_state = torch.cat([V, I_syn, t_last_spike, alpha_d1, alpha_d2], dim=1)
+    return spike_records[:spike_count], v_traces, final_state
+
+
+# ======================================================================
 # 内核 5: D1 + D2 受体动力学 — 两阶段给药
 #   Phase 1: [0, da_onset)          → 0 nM (baseline, no DA)
 #   Phase 2: [da_onset, phase2_onset) → da_level_1 nM (resting-state DA)

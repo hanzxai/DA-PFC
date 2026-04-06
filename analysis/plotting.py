@@ -195,7 +195,7 @@ def plot_combined_raster(analyzer: PFCAnalyzer, save_dir=None,
             ax.tick_params(axis='both', which='major', labelsize=14)
 
             # Title
-            batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
+            batch_label = f"Control ({analyzer.control_da} nM)" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
             ax.set_title(f"Raster — {batch_label} ({cfg['label']})")
 
     plt.tight_layout()
@@ -357,9 +357,9 @@ def _plot_combined_rates(analyzer: PFCAnalyzer, group_names: list,
             if cfg_mode == 'dynamic_d1_d2_two_stage':
                 da1 = analyzer.cfg.get('da_level_1', 0)
                 da2 = analyzer.cfg.get('da_level_2', 0)
-                batch_label = "Control" if batch_idx == 0 else f"Exp ({da1}→{da2} nM)"
+                batch_label = f"Control ({da1} nM)" if batch_idx == 0 else f"Exp ({da1}→{da2} nM)"
             else:
-                batch_label = "Control" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
+                batch_label = f"Control ({analyzer.control_da} nM)" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
             ax.set_title(f"{title_prefix} — {batch_label} ({row_label})")
 
             # Legend only on top-left panel to save space

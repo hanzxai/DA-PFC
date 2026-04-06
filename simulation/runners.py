@@ -16,6 +16,7 @@ from models.kernels import (
     run_batch_network_stepped,
     run_dynamic_d1_kernel,
     run_dynamic_d1_d2_kernel,
+    run_dynamic_d1_d2_kernel_ckpt,
     run_dynamic_d1_d2_kernel_two_stage,
     run_dynamic_d1_d2_kernel_from_state,
 )
@@ -342,7 +343,67 @@ def run_simulation_d1_d2_kinetics(duration: float = None, target_da: float = Non
             'N_E': config.N_E, 'N_I': config.N_I,
             'duration': duration, 'dt': dt,
             'da_onset': da_onset, 'da_level': target_da,
+            'control_da': config.DA_BASELINE,
             'mode': 'dynamic_d1_d2_kinetics',
+        },
+        mask_d1=mask_d1, mask_d2=mask_d2, groups_info=groups_info,
+        spikes=all_spikes, v_traces=v_traces, record_indices=record_indices,
+        final_state=final_state,
+    )
+
+
+# ==============================================================================
+# Runner 4b: D1 + D2 受体动力学 — Checkpoint 专用
+#   Batch 0 = Control (0 nM, no DA)
+#   Batch 1 = Experiment (target_da nM)
+#   用于生成 checkpoint, 图表展示 0 nM vs target DA 的对比
+# ==============================================================================
+
+def run_simulation_d1_d2_ckpt(duration: float = None, target_da: float = None, device: torch.device = None):
+    """
+    D1 + D2 receptor kinetics simulation for checkpoint generation.
+    Batch 0 = Control (0 nM, no DA), Batch 1 = Experiment (target_da nM)
+
+    The plot shows the difference between no-DA and the target DA.
+    The final_state from Batch 1 is saved as checkpoint for --resume.
+    """
+    if device is None:
+        device = config.DEVICE
+
+    if duration is None:
+        duration = 100000.0
+    if target_da is None:
+        target_da = config.DA_BASELINE
+
+    dt = config.DT
+    da_onset = config.DEFAULT_DA_ONSET
+
+    print(f"🚀 Simulation running on {device}")
+    print(f"   Mode: D1+D2 Kinetics (Checkpoint)")
+    print(f"   Batch 0 (Control): 0 nM, Batch 1 (Exp): {target_da} nM")
+    print(f"   Duration: {duration}ms, DA onset: {da_onset}ms")
+
+    W_t, mask_d1, mask_d2, groups_info = _init_network(device)
+    record_indices = _build_record_indices(groups_info, device, full=True)
+
+    t0 = time.time()
+    kp = config.build_kernel_params(device)
+    all_spikes, v_traces, final_state = _run_kernel_with_progress(
+        run_dynamic_d1_d2_kernel_ckpt,
+        (W_t, mask_d1, mask_d2,
+         float(target_da), float(da_onset), float(duration), dt,
+         record_indices, config.N_E, kp),
+        duration, dt,
+    )
+    _sync_and_report(t0)
+
+    return _pack_data(
+        cfg_dict={
+            'N_E': config.N_E, 'N_I': config.N_I,
+            'duration': duration, 'dt': dt,
+            'da_onset': da_onset, 'da_level': target_da,
+            'control_da': 0.0,
+            'mode': 'dynamic_d1_d2_ckpt',
         },
         mask_d1=mask_d1, mask_d2=mask_d2, groups_info=groups_info,
         spikes=all_spikes, v_traces=v_traces, record_indices=record_indices,
@@ -419,6 +480,7 @@ def run_simulation_d1_d2_two_stage(
             'duration': duration, 'dt': dt,
             'da_onset': phase2_onset,     # Analyzer uses this as the split point
             'da_level': da_level_2,       # primary DA level for analysis
+            'control_da': config.DA_BASELINE,  # Control batch DA
             'da_level_1': da_level_1,     # resting-state DA
             'da_level_2': da_level_2,     # challenge DA
             'phase1_da_onset': da_onset,  # when resting DA starts
@@ -523,6 +585,7 @@ def run_simulation_from_checkpoint(
             'N_E': config.N_E, 'N_I': config.N_I,
             'duration': duration, 'dt': dt,
             'da_onset': da_onset, 'da_level': da_level,
+            'control_da': config.DA_BASELINE,
             'mode': 'resume_from_checkpoint',
             'checkpoint_path': checkpoint_path,
             'prev_da': prev_da,

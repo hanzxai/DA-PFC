@@ -13,6 +13,7 @@ DA-PFC 仿真主入口 (SNN Simulation)
   --save-ckpt : 仿真结束后保存 checkpoint 到 checkpoints/ (默认不保存)
   --da2       : 两阶段模式: 第二阶段 DA 浓度 (nM)
   --phase2-onset : 两阶段模式: 第二阶段起始时间 (s)
+  --da-baseline  : 覆盖基线 DA 浓度 (nM), 默认使用 config.DA_BASELINE=2.0
 
 ============================================================
  使用方法 (Usage Examples)
@@ -53,7 +54,12 @@ import argparse
 import time
 import torch
 import config
-from simulation.runners import run_simulation_d1_d2_kinetics, run_simulation_d1_d2_two_stage, run_simulation_from_checkpoint
+from simulation.runners import (
+    run_simulation_d1_d2_kinetics,
+    run_simulation_d1_d2_ckpt,
+    run_simulation_d1_d2_two_stage,
+    run_simulation_from_checkpoint,
+)
 from analysis.analyzer import PFCAnalyzer
 from analysis.plotting import (plot_combined_raster,
                                 plot_combined_rates_all,
@@ -92,9 +98,10 @@ def parse_args():
     parser.add_argument("--gpu", type=int, default=0,
                         help="GPU卡号, 默认 0. 无GPU或输入无效将回退到CPU")
     parser.add_argument("--save-ckpt", action="store_true", default=False,
-                        help="仿真结束后保存 checkpoint 到 checkpoints/ 目录 (默认不保存)")
+                        help="仓真结束后保存 checkpoint 到 checkpoints/ 目录 (默认不保存)")
+    parser.add_argument("--da-baseline", type=float, default=None,
+                        help="覆盖基线 DA 浓度 (nM), 默认使用 config.DA_BASELINE=2.0")
     return parser.parse_args()
-
 
 def main():
     args = parse_args()
@@ -111,6 +118,11 @@ def main():
         device = torch.device("cpu")
     print(f"🔧 Using device: {device}")
 
+    # Override DA_BASELINE if user specified --da-baseline
+    if args.da_baseline is not None:
+        config.DA_BASELINE = args.da_baseline
+        print(f"🔧 DA_BASELINE overridden to {args.da_baseline} nM")
+
     # 将秒转换为毫秒
     duration_ms = args.duration * 1000.0
     phase2_onset_ms = args.phase2_onset * 1000.0 if args.phase2_onset is not None else None
@@ -118,6 +130,7 @@ def main():
     # 判断运行模式
     resume_mode = args.resume is not None
     two_stage = args.da2 is not None and not resume_mode
+    ckpt_mode = args.save_ckpt and not resume_mode and not two_stage
     # 判断用户是否显式指定了 duration (默认值为 100.0)
     user_specified_duration = (args.duration != 100.0)
 
@@ -131,6 +144,8 @@ def main():
     elif two_stage:
         dur_str = f"{int(args.duration)}s" if user_specified_duration else "auto"
         exp_tag = f"2stage_DA{_fmt_da(args.da)}-{_fmt_da(args.da2)}nM_{dur_str}"
+    elif ckpt_mode:
+        exp_tag = f"ckpt_DA{_fmt_da(args.da)}nM_{int(args.duration)}s"
     else:
         exp_tag = f"DA{_fmt_da(args.da)}nM_{int(args.duration)}s"
 
@@ -158,13 +173,22 @@ def main():
             "note": (f"Two-Stage DA: {args.da}nM → {args.da2}nM "
                      f"(D1 Tau_on={config.TAU_ON_D1}ms, D2 Tau_on={config.TAU_ON_D2}ms)"),
         }
+    elif ckpt_mode:
+        exp_config = {
+            "duration": duration_ms,
+            "target_da": args.da,
+            "control_da": 0.0,
+            "dt": config.DT,
+            "device": str(device),
+            "note": f"Checkpoint mode: Ctrl=0nM, Exp={args.da}nM, Duration={args.duration}s",
+        }
     else:
         exp_config = {
             "duration": duration_ms,
             "target_da": args.da,
             "dt": config.DT,
             "device": str(device),
-            "note": f"D1+D2 受体动力学 (D1 Tau_on={config.TAU_ON_D1}ms, D2 Tau_on={config.TAU_ON_D2}ms, DA={args.da}nM, Duration={args.duration}s)",
+            "note": f"D1+D2 Kinetics (DA={args.da}nM, Duration={args.duration}s)",
         }
     save_args(exp_config, save_dir)
 
@@ -186,6 +210,13 @@ def main():
             da_level_1=args.da,
             da_level_2=args.da2,
             phase2_onset=phase2_onset_ms,
+            device=device,
+        )
+    elif ckpt_mode:
+        # Checkpoint mode: Batch 0 = 0 nM, Batch 1 = target DA
+        data = run_simulation_d1_d2_ckpt(
+            duration=duration_ms,
+            target_da=args.da,
             device=device,
         )
     else:

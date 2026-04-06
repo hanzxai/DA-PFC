@@ -172,10 +172,11 @@ def save_checkpoint(data: dict, da_level: float, duration_s: float,
     ckpt_dir = Path(base_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build descriptive filename
+    # Build descriptive filename (includes BG_MEAN for traceability)
     da_str = f"{da_level}".rstrip('0').rstrip('.')
     dur_str = f"{int(duration_s)}" if duration_s == int(duration_s) else f"{duration_s:.1f}"
-    filename = f"ckpt_DA{da_str}nM_{dur_str}s.pkl"
+    bg_str = f"{config.BG_MEAN:g}"
+    filename = f"ckpt_DA{da_str}nM_bg{bg_str}_{dur_str}s.pkl"
     file_path = ckpt_dir / filename
 
     # Build parameter fingerprint from current config

@@ -40,6 +40,7 @@ class PFCAnalyzer:
         self.N = self.N_E + self.N_I
         self.da_onset = self.cfg.get('da_onset', 1000.0)
         self.da_level = self.cfg.get('da_level', 10.0)
+        self.control_da = self.cfg.get('control_da', 2.0)  # default = DA_BASELINE
 
         # 构建亚群 Mask
         self._build_group_masks()
@@ -448,7 +449,7 @@ class PFCAnalyzer:
         if self.da_onset > 0 and batch_idx == 1:
             ax.axvline(self.da_onset, color='k', linestyle='--')
 
-        batch_label = 'Control' if batch_idx == 0 else f'Exp ({self.da_level} nM)'
+        batch_label = f'Control ({self.control_da} nM)' if batch_idx == 0 else f'Exp ({self.da_level} nM)'
         ax.set_title(title or f"Raster Plot - {batch_label}")
         ax.set_xlabel("Time (ms)")
         ax.set_ylabel("Neuron ID")
