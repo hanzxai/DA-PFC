@@ -116,6 +116,7 @@ def run_dynamic_model(args, device, W_t, mask_d1, mask_d2, groups_info, init_sta
         float(total_ms), float(config.DT),
         record_indices, config.N_E,
         alpha_record_interval,
+        config.build_kernel_params(device),
     )
 
     if torch.cuda.is_available():
@@ -165,6 +166,7 @@ def run_static_model(args, device, W_t, mask_d1, mask_d2, groups_info):
         W_t, params_rest, params_active,
         float(total_ms), float(config.DT), float(baseline_ms),
         record_indices, config.N_E,
+        config.build_kernel_params(device),
     )
 
     if torch.cuda.is_available():

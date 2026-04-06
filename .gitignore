@@ -10,6 +10,9 @@ outputs/sweep_*/*
 !outputs/sweep_*/*.json
 !outputs/sweep_*/*.png
 
+# --- Checkpoints (包含 final_state tensor, 不应入库) ---
+checkpoints/
+
 # --- Python 缓存 ---
 __pycache__/
 *.py[cod]
@@ -36,12 +39,13 @@ Thumbs.db
 # --- 临时文件 ---
 tmp/
 *.log
+*.tmp
 project_report.txt
 
-# --- 临时分析脚本 ---
-analyze_exp.py
-analyze_quick.py
-analyze_exp_results.py
+# --- 临时分析脚本 (根目录散落的临时 py 文件) ---
+/analyze_*.py
+/check_*.py
+/test_*.py
 
 # --- 其他临时文件 ---
 _log.txt
@@ -49,7 +53,6 @@ _out.txt
 _push.txt
 push_result.txt
 test_out.txt
-*.tmp
 
 # --- Sweep 临时文件 ---
 sweep_check.txt

@@ -391,6 +391,7 @@ def main():
         float(total_ms), float(config.DT),
         record_indices, config.N_E,
         alpha_record_interval,
+        config.build_kernel_params(device),
     )
 
     if torch.cuda.is_available():

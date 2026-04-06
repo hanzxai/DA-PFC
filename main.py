@@ -59,7 +59,7 @@ from analysis.plotting import (plot_combined_raster,
                                 plot_combined_rates_all,
                                 plot_combined_rates_E,
                                 plot_combined_rates_I)
-from utils import setup_experiment_folder, save_args, save_raw_data, save_checkpoint
+from simulation.utils import setup_experiment_folder, save_args, save_raw_data, save_checkpoint
 
 
 def _fmt_elapsed(seconds: float) -> str:
@@ -111,9 +111,6 @@ def main():
         device = torch.device("cpu")
     print(f"🔧 Using device: {device}")
 
-    # 1. 准备实验文件夹
-    save_dir = setup_experiment_folder()
-
     # 将秒转换为毫秒
     duration_ms = args.duration * 1000.0
     phase2_onset_ms = args.phase2_onset * 1000.0 if args.phase2_onset is not None else None
@@ -123,6 +120,22 @@ def main():
     two_stage = args.da2 is not None and not resume_mode
     # 判断用户是否显式指定了 duration (默认值为 100.0)
     user_specified_duration = (args.duration != 100.0)
+
+    # 构建实验文件夹描述性 tag
+    def _fmt_da(val: float) -> str:
+        """Format DA value: 2.0 -> '2', 15.5 -> '15.5'"""
+        return f"{val:g}"
+
+    if resume_mode:
+        exp_tag = f"resume_DA{_fmt_da(args.da)}nM_{int(args.duration)}s"
+    elif two_stage:
+        dur_str = f"{int(args.duration)}s" if user_specified_duration else "auto"
+        exp_tag = f"2stage_DA{_fmt_da(args.da)}-{_fmt_da(args.da2)}nM_{dur_str}"
+    else:
+        exp_tag = f"DA{_fmt_da(args.da)}nM_{int(args.duration)}s"
+
+    # 1. 准备实验文件夹
+    save_dir = setup_experiment_folder(tag=exp_tag)
 
     # 2. 实验配置
     if resume_mode:

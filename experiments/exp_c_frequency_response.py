@@ -144,6 +144,7 @@ def run_single_frequency(freq_hz, args, device, W_t, mask_d1, mask_d2, groups_in
             float(duration_ms), float(config.DT),
             record_indices, config.N_E,
             alpha_record_interval,
+            config.build_kernel_params(device),
         )
 
     data = {

@@ -18,13 +18,9 @@ from models.kernels import (
     run_dynamic_d1_d2_kernel,
     run_dynamic_d1_d2_kernel_two_stage,
     run_dynamic_d1_d2_kernel_from_state,
-    verify_kernel_params_consistent,
 )
 from models.pharmacology import get_batch_modulation_params, get_stepped_modulation_params
-
-# 启动时校验 kernels.py 硬编码参数与 config.py 是否一致
-# 若不一致会立即抛出 AssertionError, 防止静默使用错误参数运行仿真
-verify_kernel_params_consistent()
+from simulation.utils import verify_checkpoint_fingerprint
 
 
 # ==============================================================================
@@ -178,7 +174,7 @@ def run_simulation_in_memory(device_name: str = "cuda:0"):
     duration = config.DEFAULT_DURATION
     dt = config.DT
     FIXED_DA = 10.0
-    DA_BASELINE = 2.0
+    DA_BASELINE = config.DA_BASELINE
 
     W_t, mask_d1, mask_d2, groups_info = _init_network(device)
     N = config.N_TOTAL
@@ -190,9 +186,10 @@ def run_simulation_in_memory(device_name: str = "cuda:0"):
     )
 
     t0 = time.time()
+    kp = config.build_kernel_params(device)
     all_spikes, v_traces = _run_kernel_with_progress(
         run_batch_network,
-        (W_t, mod_R, I_mod, scale_syn, duration, dt, record_indices, config.N_E),
+        (W_t, mod_R, I_mod, scale_syn, duration, dt, record_indices, config.N_E, kp),
         duration, dt,
     )
     _sync_and_report(t0)
@@ -220,7 +217,7 @@ def run_simulation_stepped(device_name: str = "cuda:0", da_level: float = 10.0):
     duration = 3000.0
     dt = config.DT
     DA_ONSET = 1000.0
-    DA_BASELINE = 2.0
+    DA_BASELINE = config.DA_BASELINE
 
     W_t, mask_d1, mask_d2, groups_info = _init_network(device)
     N = config.N_TOTAL
@@ -233,9 +230,10 @@ def run_simulation_stepped(device_name: str = "cuda:0", da_level: float = 10.0):
 
     print(f"   DA Onset at {DA_ONSET}ms")
     t0 = time.time()
+    kp = config.build_kernel_params(device)
     all_spikes, v_traces = _run_kernel_with_progress(
         run_batch_network_stepped,
-        (W_t, params_rest, params_active, duration, dt, DA_ONSET, record_indices, config.N_E),
+        (W_t, params_rest, params_active, duration, dt, DA_ONSET, record_indices, config.N_E, kp),
         duration, dt,
     )
     _sync_and_report(t0)
@@ -275,11 +273,12 @@ def run_simulation_d1_kinetics(duration: float = None, target_da: float = None):
     record_indices = _build_record_indices(groups_info, device, full=True)
 
     t0 = time.time()
+    kp = config.build_kernel_params(device)
     all_spikes, v_traces = _run_kernel_with_progress(
         run_dynamic_d1_kernel,
         (W_t, mask_d1, mask_d2,
          float(target_da), float(da_onset), float(duration), dt,
-         record_indices, config.N_E),
+         record_indices, config.N_E, kp),
         duration, dt,
     )
     _sync_and_report(t0)
@@ -328,11 +327,12 @@ def run_simulation_d1_d2_kinetics(duration: float = None, target_da: float = Non
     record_indices = _build_record_indices(groups_info, device, full=True)
 
     t0 = time.time()
+    kp = config.build_kernel_params(device)
     all_spikes, v_traces, final_state = _run_kernel_with_progress(
         run_dynamic_d1_d2_kernel,
         (W_t, mask_d1, mask_d2,
          float(target_da), float(da_onset), float(duration), dt,
-         record_indices, config.N_E),
+         record_indices, config.N_E, kp),
         duration, dt,
     )
     _sync_and_report(t0)
@@ -401,13 +401,14 @@ def run_simulation_d1_d2_two_stage(
     record_indices = _build_record_indices(groups_info, device, full=True)
 
     t0 = time.time()
+    kp = config.build_kernel_params(device)
     all_spikes, v_traces, final_state = _run_kernel_with_progress(
         run_dynamic_d1_d2_kernel_two_stage,
         (W_t, mask_d1, mask_d2,
          float(da_level_1), float(da_level_2),
          float(da_onset), float(phase2_onset),
          float(duration), dt,
-         record_indices, config.N_E),
+         record_indices, config.N_E, kp),
         duration, dt,
     )
     _sync_and_report(t0)
@@ -473,6 +474,9 @@ def run_simulation_from_checkpoint(
             "Please re-run the source simulation with the updated code to save final_state."
         )
 
+    # Verify parameter fingerprint — abort if mismatch
+    verify_checkpoint_fingerprint(ckpt_data, checkpoint_path)
+
     ckpt_cfg = ckpt_data['config']
     prev_da = ckpt_cfg.get('da_level', 'unknown')
     prev_mode = ckpt_cfg.get('mode', 'unknown')
@@ -504,11 +508,12 @@ def run_simulation_from_checkpoint(
     init_state = ckpt_data['final_state'].to(device)
 
     t0 = time.time()
+    kp = config.build_kernel_params(device)
     all_spikes, v_traces, final_state = _run_kernel_with_progress(
         run_dynamic_d1_d2_kernel_from_state,
         (W_t, mask_d1, mask_d2, init_state,
          float(da_level), float(da_onset), float(duration), dt,
-         record_indices, config.N_E),
+         record_indices, config.N_E, kp),
         duration, dt,
     )
     _sync_and_report(t0)

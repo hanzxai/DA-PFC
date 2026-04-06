@@ -405,6 +405,7 @@ def run_single_experiment(run_id, run_label, W_t, mask_d1, mask_d2, init_state,
             float(total_ms), float(config.DT),
             record_indices, config.N_E,
             alpha_record_interval,
+            config.build_kernel_params(device),
         )
 
     if torch.cuda.is_available():

@@ -1,119 +1,25 @@
 # models/kernels.py
 """
 JIT 编译的仿真内核
-三种模式：静态 / 分步给药 / D1 动力学
 
-注意: @torch.jit.script 函数内部不能访问 Python 全局模块 (如 config)，
-      因此 LIF 参数在每个函数顶部以字面量定义。
-      所有数值与 config.py 保持一致，修改时需同步。
+所有参数通过 params: torch.Tensor (1-D, 25 elements) 从 config.build_kernel_params() 传入,
+消除了硬编码重复, config.py 是唯一的参数定义位置 (Single Source of Truth).
+
+Params tensor layout (see config.py for details):
+  [0]  V_REST       [1]  V_RESET      [2]  V_TH
+  [3]  R_BASE       [4]  TAU_SYN      [5]  T_REF
+  [6]  BG_MEAN      [7]  BG_STD       [8]  C_E
+  [9]  C_I          [10] EC50_D1      [11] EC50_D2
+  [12] BETA         [13] EPS_D1       [14] EPS_D2
+  [15] BIAS_D1      [16] BIAS_D2      [17] LAM_D1
+  [18] LAM_D2       [19] TAU_ON_D1    [20] TAU_OFF_D1
+  [21] TAU_ON_D2    [22] TAU_OFF_D2   [23] DA_BASELINE
+  [24] SPIKE_RATE_ESTIMATE
+
+Deprecated functions (tau/kon_koff alpha steps, verify_kernel_params_consistent)
+have been moved to models/_deprecated_kernels.py.
 """
 import torch
-
-
-# ======================================================================
-# 工具函数: alpha_D1 一阶动力学单步更新 (可单独调试)
-# ======================================================================
-@torch.jit.script
-def compute_alpha_d1_step(
-    alpha_d1: torch.Tensor,
-    da_t: torch.Tensor,
-    current_time: float,
-    da_onset: float,
-    dt: float,
-) -> torch.Tensor:
-    """
-    alpha_D1 一阶动力学单步更新。
-
-    Args:
-        alpha_d1 : (batch, 1) 当前 D1 受体激活状态
-        da_t     : (batch, 1) 当前时刻各 batch 的 DA 浓度 (nM)
-        current_time : 当前仿真时间 (ms)
-        da_onset     : DA 给药起始时间 (ms)
-        dt           : 时间步长 (ms)
-
-    Returns:
-        alpha_d1_new : (batch, 1) 更新后的 D1 受体激活状态
-    """
-    TAU_ON_D1  = 30876.1
-    TAU_OFF_D1 = 164472.5
-    EC50_D1    = 4.0
-    BETA       = 1.0
-
-    # 目标值 S(t) — Sigmoid (baseline DA=2nM, both batches)
-    s_d1 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D1)))
-
-    # 一阶动力学: d(alpha_d1)/dt = (s_d1 - alpha_d1) / tau
-    diff = s_d1 - alpha_d1
-    tau_dynamic = torch.where(
-        diff > 0,
-        torch.tensor(TAU_ON_D1,  device=alpha_d1.device),
-        torch.tensor(TAU_OFF_D1, device=alpha_d1.device),
-    )
-    alpha_d1_new = alpha_d1 + (diff / tau_dynamic) * dt
-    return alpha_d1_new
-
-
-# ======================================================================
-# 工具函数: alpha_D1 一阶动力学单步更新 —— k_on / k_off 参数化版本
-#
-# 方程形式:
-#   dα/dt = k_on · (s_D1 - α)⁺  -  k_off · (α - s_D1)⁺
-#
-# 其中 (x)⁺ = max(x, 0)，即:
-#   - 当 α < s_D1 (上升阶段): dα/dt = k_on  · (s_D1 - α)
-#   - 当 α > s_D1 (下降阶段): dα/dt = -k_off · (α - s_D1)
-#   - 当 α = s_D1 (稳态):     dα/dt = 0  → 稳态精确等于 s_D1
-#
-# 与 tau 版本的关系:
-#   k_on  = 1 / TAU_ON_D1   (上升速率常数, 单位 ms⁻¹)
-#   k_off = 1 / TAU_OFF_D1  (下降速率常数, 单位 ms⁻¹)
-#
-# 物理意义:
-#   k_on  描述受体被 DA 激活的速率 (越大上升越快)
-#   k_off 描述受体自发失活/解离的速率 (越大下降越快)
-#   稳态激活水平由 s_D1 (Sigmoid of DA concentration) 决定
-# ======================================================================
-@torch.jit.script
-def compute_alpha_d1_step_kon_koff(
-    alpha_d1: torch.Tensor,
-    da_t: torch.Tensor,
-    current_time: float,
-    da_onset: float,
-    dt: float,
-    k_on: float,
-    k_off: float,
-) -> torch.Tensor:
-    """
-    alpha_D1 一阶动力学单步更新 —— k_on / k_off 参数化版本。
-
-    方程: dα/dt = k_on · (s_D1 - α)⁺ - k_off · (α - s_D1)⁺
-    稳态: α_ss = s_D1  (峰值精确等于 Sigmoid 目标值)
-
-    Args:
-        alpha_d1     : (batch, 1) 当前 D1 受体激活状态
-        da_t         : (batch, 1) 当前时刻各 batch 的 DA 浓度 (nM)
-        current_time : 当前仿真时间 (ms)
-        da_onset     : DA 给药起始时间 (ms)
-        dt           : 时间步长 (ms)
-        k_on         : 上升速率常数 (ms⁻¹), 默认 = 1/TAU_ON_D1  ≈ 3.24e-5
-        k_off        : 下降速率常数 (ms⁻¹), 默认 = 1/TAU_OFF_D1 ≈ 6.08e-6
-
-    Returns:
-        alpha_d1_new : (batch, 1) 更新后的 D1 受体激活状态
-    """
-    EC50_D1 = 4.0
-    BETA    = 1.0
-
-    # 目标值 S(t) — Sigmoid (baseline DA=2nM, both batches)
-    s_d1 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D1)))
-
-    # 一阶动力学: 上升项 / 下降项分离
-    rise_term = torch.clamp(s_d1 - alpha_d1, min=0.0)   # (s_D1 - α)⁺
-    fall_term = torch.clamp(alpha_d1 - s_d1, min=0.0)   # (α - s_D1)⁺
-
-    d_alpha = k_on * rise_term - k_off * fall_term
-    alpha_d1_new = alpha_d1 + d_alpha * dt
-    return alpha_d1_new
 
 
 # ======================================================================
@@ -142,6 +48,8 @@ def compute_alpha_d1_step_langmuir(
     dt: float,
     k_on: float,
     k_off: float,
+    ec50: float,
+    beta: float,
 ) -> torch.Tensor:
     """
     alpha_D1 Langmuir 受体结合动力学单步更新。
@@ -157,15 +65,14 @@ def compute_alpha_d1_step_langmuir(
         dt           : 时间步长 (ms)
         k_on         : 结合速率常数 (ms⁻¹)
         k_off        : 解离速率常数 (ms⁻¹)
+        ec50         : D1 半效浓度 (nM), from params[10]
+        beta         : Sigmoid 斜率, from params[12]
 
     Returns:
         alpha_d1_new : (batch, 1) 更新后的 D1 受体激活状态
     """
-    EC50_D1 = 4.0
-    BETA    = 1.0
-
-    # 目标值 S(t) — Sigmoid (baseline DA=2nM, both batches)
-    s_d1 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D1)))
+    # 目标值 S(t) — Sigmoid
+    s_d1 = 1.0 / (1.0 + torch.exp(-beta * (da_t - ec50)))
 
     # Langmuir 动力学: 结合项 - 解离项
     bind_term   = k_on * s_d1 * (1.0 - alpha_d1)   # 结合: 正比于游离受体
@@ -176,124 +83,6 @@ def compute_alpha_d1_step_langmuir(
     # 限制在 [0, 1]
     alpha_d1_new = torch.clamp(alpha_d1_new, 0.0, 1.0)
     return alpha_d1_new
-
-
-# ======================================================================
-# 工具函数: alpha_D2 一阶动力学单步更新 (tau 版本)
-#
-# D2 受体与 D1 受体的关键差异:
-#   1. 亲和力更高: EC50_D2 = 8.0 nM (当前代码设定; 生物学上 D2 亲和力
-#      实际高于 D1, 但此处沿用已有参数体系)
-#   2. 动力学更快: D2 受体偶联 Gi 蛋白, 信号转导链更短, 响应更迅速
-#      τ_on_D2  ≈ 10000 ms  (约为 D1 的 1/3)
-#      τ_off_D2 ≈ 50000 ms  (约为 D1 的 1/3)
-#   3. 效应方向相反: D2 激活 → 抑制 cAMP → 降低神经元兴奋性
-#      在网络中体现为: mod_R 减小 (R_eff 降低), I_mod 为负 (抑制电流)
-#
-# 方程形式 (与 D1 tau 版本结构相同, 仅参数不同):
-#   dα_D2/dt = (s_D2(t) - α_D2) / τ_D2
-#
-# 其中 τ_D2 根据方向动态选择:
-#   τ_D2 = τ_on_D2  当 s_D2 > α_D2 (上升)
-#   τ_D2 = τ_off_D2 当 s_D2 < α_D2 (下降)
-# ======================================================================
-@torch.jit.script
-def compute_alpha_d2_step(
-    alpha_d2: torch.Tensor,
-    da_t: torch.Tensor,
-    current_time: float,
-    da_onset: float,
-    dt: float,
-) -> torch.Tensor:
-    """
-    alpha_D2 一阶动力学单步更新 (tau 版本)。
-
-    D2 受体动力学比 D1 更快 (τ 约为 D1 的 1/3):
-      τ_on_D2  = 10000 ms
-      τ_off_D2 = 50000 ms
-
-    Args:
-        alpha_d2     : (batch, 1) 当前 D2 受体激活状态
-        da_t         : (batch, 1) 当前时刻各 batch 的 DA 浓度 (nM)
-        current_time : 当前仿真时间 (ms)
-        da_onset     : DA 给药起始时间 (ms)
-        dt           : 时间步长 (ms)
-
-    Returns:
-        alpha_d2_new : (batch, 1) 更新后的 D2 受体激活状态
-    """
-    TAU_ON_D2  = 10000.0   # ms — D2 上升时间常数 (比 D1 快 ~3x)
-    TAU_OFF_D2 = 50000.0   # ms — D2 下降时间常数 (比 D1 快 ~3x)
-    EC50_D2    = 8.0       # nM — D2 半效浓度
-    BETA       = 1.0
-
-    # 目标值 S(t) — Sigmoid (baseline DA=2nM, both batches)
-    s_d2 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D2)))
-
-    # 一阶动力学: d(alpha_d2)/dt = (s_d2 - alpha_d2) / tau
-    diff = s_d2 - alpha_d2
-    tau_dynamic = torch.where(
-        diff > 0,
-        torch.tensor(TAU_ON_D2,  device=alpha_d2.device),
-        torch.tensor(TAU_OFF_D2, device=alpha_d2.device),
-    )
-    alpha_d2_new = alpha_d2 + (diff / tau_dynamic) * dt
-    return alpha_d2_new
-
-
-# ======================================================================
-# 工具函数: alpha_D2 一阶动力学单步更新 —— k_on / k_off 参数化版本
-#
-# 方程形式 (与 D1 k_on/k_off 版本结构相同):
-#   dα_D2/dt = k_on_D2 · (s_D2 - α_D2)⁺  -  k_off_D2 · (α_D2 - s_D2)⁺
-#
-# 稳态: α_ss = s_D2  (精确等于 Sigmoid 目标值)
-#
-# 参数关系:
-#   k_on_D2  = 1 / TAU_ON_D2  ≈ 1.0e-4  ms⁻¹  (比 D1 快 ~3x)
-#   k_off_D2 = 1 / TAU_OFF_D2 ≈ 2.0e-5  ms⁻¹  (比 D1 快 ~3x)
-# ======================================================================
-@torch.jit.script
-def compute_alpha_d2_step_kon_koff(
-    alpha_d2: torch.Tensor,
-    da_t: torch.Tensor,
-    current_time: float,
-    da_onset: float,
-    dt: float,
-    k_on: float,
-    k_off: float,
-) -> torch.Tensor:
-    """
-    alpha_D2 一阶动力学单步更新 —— k_on / k_off 参数化版本。
-
-    方程: dα/dt = k_on · (s_D2 - α)⁺ - k_off · (α - s_D2)⁺
-    稳态: α_ss = s_D2
-
-    Args:
-        alpha_d2     : (batch, 1) 当前 D2 受体激活状态
-        da_t         : (batch, 1) 当前时刻各 batch 的 DA 浓度 (nM)
-        current_time : 当前仿真时间 (ms)
-        da_onset     : DA 给药起始时间 (ms)
-        dt           : 时间步长 (ms)
-        k_on         : 上升速率常数 (ms⁻¹)
-        k_off        : 下降速率常数 (ms⁻¹)
-
-    Returns:
-        alpha_d2_new : (batch, 1) 更新后的 D2 受体激活状态
-    """
-    EC50_D2 = 8.0
-    BETA    = 1.0
-
-    # 目标值 S(t) — Sigmoid (baseline DA=2nM, both batches)
-    s_d2 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D2)))
-
-    # 一阶动力学: 上升项 / 下降项分离
-    rise_term = torch.clamp(s_d2 - alpha_d2, min=0.0)   # (s_D2 - α)⁺
-    fall_term = torch.clamp(alpha_d2 - s_d2, min=0.0)   # (α - s_D2)⁺
-
-    d_alpha = k_on * rise_term - k_off * fall_term
-    alpha_d2_new = alpha_d2 + d_alpha * dt
-    return alpha_d2_new
 
 
 # ======================================================================
@@ -317,6 +106,8 @@ def compute_alpha_d2_step_langmuir(
     dt: float,
     k_on: float,
     k_off: float,
+    ec50: float,
+    beta: float,
 ) -> torch.Tensor:
     """
     alpha_D2 Langmuir 受体结合动力学单步更新。
@@ -332,15 +123,14 @@ def compute_alpha_d2_step_langmuir(
         dt           : 时间步长 (ms)
         k_on         : 结合速率常数 (ms⁻¹)
         k_off        : 解离速率常数 (ms⁻¹)
+        ec50         : D2 半效浓度 (nM), from params[11]
+        beta         : Sigmoid 斜率, from params[12]
 
     Returns:
         alpha_d2_new : (batch, 1) 更新后的 D2 受体激活状态
     """
-    EC50_D2 = 8.0
-    BETA    = 1.0
-
-    # 目标值 S(t) — Sigmoid (baseline DA=2nM, both batches)
-    s_d2 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D2)))
+    # 目标值 S(t) — Sigmoid
+    s_d2 = 1.0 / (1.0 + torch.exp(-beta * (da_t - ec50)))
 
     # Langmuir 动力学: 结合项 - 解离项
     bind_term   = k_on * s_d2 * (1.0 - alpha_d2)   # 结合: 正比于游离受体
@@ -366,21 +156,29 @@ def run_batch_network(
     dt: float,
     record_indices: torch.Tensor,
     n_exc: int,
+    params: torch.Tensor,
 ):
     """
     静态并行仿真内核。
     W_t: (N, N), mod_R/I_mod/scale_syn: (Batch, N)
     record_indices: (K, 2) -> [batch_idx, neuron_idx]
+    params: (25,) parameter tensor from config.build_kernel_params()
     Returns: (spike_records, v_traces)
     """
     batch_size, N = mod_R.shape
     steps = int(duration / dt)
 
-    # --- LIF 参数 (与 config.py 一致) ---
-    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
-    R_base, t_ref, tau_syn = 0.1, 5.0, 5.0
-    bg_mean, bg_std = 200.0, 25.0  # V_ss=-50mV=V_th, critical-point drive
-    C_E, C_I = 250.0, 90.0  # membrane capacitance (pF): E=250, I=90
+    # --- Unpack params ---
+    V_rest   = float(params[0])
+    V_reset  = float(params[1])
+    V_th     = float(params[2])
+    R_base   = float(params[3])
+    tau_syn  = float(params[4])
+    t_ref    = float(params[5])
+    bg_mean  = float(params[6])
+    bg_std   = float(params[7])
+    C_E      = float(params[8])
+    C_I      = float(params[9])
 
     # --- C_m 向量: (1, N), E 神经元=250, I 神经元=90 ---
     C_m = torch.full((1, N), C_I, device=W_t.device)
@@ -457,6 +255,7 @@ def run_batch_network_stepped(
     da_onset: float,
     record_indices: torch.Tensor,
     n_exc: int,
+    params: torch.Tensor,
 ):
     """分步给药内核: 在 da_onset 时刻瞬时切换调节参数。"""
     mod_R_rest, I_mod_rest, scale_rest = params_rest
@@ -465,11 +264,17 @@ def run_batch_network_stepped(
     batch_size, N = mod_R_rest.shape
     steps = int(duration / dt)
 
-    # --- LIF 参数 ---
-    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
-    R_base, t_ref, tau_syn = 0.1, 5.0, 5.0  # R_base unit: GΩ (= mV/pA)
-    bg_mean, bg_std = 200.0, 25.0  # V_ss=-50mV=V_th, critical-point drive
-    C_E, C_I = 250.0, 90.0  # membrane capacitance (pF): E=250, I=90
+    # --- Unpack params ---
+    V_rest   = float(params[0])
+    V_reset  = float(params[1])
+    V_th     = float(params[2])
+    R_base   = float(params[3])
+    tau_syn  = float(params[4])
+    t_ref    = float(params[5])
+    bg_mean  = float(params[6])
+    bg_std   = float(params[7])
+    C_E      = float(params[8])
+    C_I      = float(params[9])
 
     # --- C_m 向量: (1, N), E 神经元=250, I 神经元=90 ---
     C_m = torch.full((1, N), C_I, device=W_t.device)
@@ -551,37 +356,44 @@ def run_dynamic_d1_kernel(
     dt: float,
     record_indices: torch.Tensor,
     n_exc: int,
+    params: torch.Tensor,
 ):
     """
     D1 受体动力学仿真内核。
-    - D1: 一阶动力学 (Tau_on / Tau_off)
-    - D2: 瞬时响应
-    Batch 0 = Control (0 nM), Batch 1 = Experiment (da_level nM)
+    - D1: 一阶动力学 (Langmuir)
+    - D2: 一阶动力学 (Langmuir)
+    Batch 0 = Control (baseline), Batch 1 = Experiment (da_level nM)
     """
-    # --- 药理学常数 (与 config.py 一致) ---
-    EC50_D1 = 4.0
-    EC50_D2 = 8.0
-    BETA = 1.0
-    EPS_D1, EPS_D2 = 0.15, 0.10   # D1: Gain 增强比例; D2: Gain 减弱比例
-    BIAS_D1, BIAS_D2 = 12.0, -10.0
-    LAM_D1, LAM_D2 = 0.3, 0.2
-    # --- D1 Langmuir 动力学参数 ---
-    TAU_ON_D1 = 30876.1
-    TAU_OFF_D1 = 164472.5
-    k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)   # D1 binding rate (ms⁻¹)
-    k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)  # D1 unbinding rate (ms⁻¹)
-    # --- D2 Langmuir 动力学参数 ---
-    TAU_ON_D2 = 10000.0
-    TAU_OFF_D2 = 50000.0
-    k_on_d2  = 1.0 / TAU_ON_D2   # D2 binding rate (ms⁻¹)
-    k_off_d2 = 1.0 / TAU_OFF_D2  # D2 unbinding rate (ms⁻¹)
-
-    # R_base: 基础膜电阻 (GΩ = mV/pA), V in mV, I in pA
-    # τ_m = R_base * C_m: E 神经元 τ_m = 0.1 GΩ * 250 pF = 25 ms
-    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
-    R_base, tau_syn, t_ref = 0.1, 5.0, 5.0  # R_base unit: GΩ (= mV/pA)
-    bg_mean, bg_std = 200.0, 25.0  # V_ss=-50mV=V_th, critical-point drive
-    C_E, C_I = 250.0, 90.0  # membrane capacitance (pF): E=250, I=90
+    # --- Unpack params ---
+    V_rest   = float(params[0])
+    V_reset  = float(params[1])
+    V_th     = float(params[2])
+    R_base   = float(params[3])
+    tau_syn  = float(params[4])
+    t_ref    = float(params[5])
+    bg_mean  = float(params[6])
+    bg_std   = float(params[7])
+    C_E      = float(params[8])
+    C_I      = float(params[9])
+    EC50_D1  = float(params[10])
+    EC50_D2  = float(params[11])
+    BETA     = float(params[12])
+    EPS_D1   = float(params[13])
+    EPS_D2   = float(params[14])
+    BIAS_D1  = float(params[15])
+    BIAS_D2  = float(params[16])
+    LAM_D1   = float(params[17])
+    LAM_D2   = float(params[18])
+    TAU_ON_D1  = float(params[19])
+    TAU_OFF_D1 = float(params[20])
+    TAU_ON_D2  = float(params[21])
+    TAU_OFF_D2 = float(params[22])
+    DA_BASELINE = float(params[23])
+    # --- Derived Langmuir kinetics ---
+    k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
+    k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
+    k_on_d2  = 1.0 / TAU_ON_D2
+    k_off_d2 = 1.0 / TAU_OFF_D2
 
     # --- 初始化 ---
     N = W_t.shape[0]
@@ -612,8 +424,7 @@ def run_dynamic_d1_kernel(
     for i in range(steps):
         current_time = i * dt
 
-        # A. 当前 DA 浓度 (baseline=2nM for both batches)
-        DA_BASELINE = 2.0
+        # A. 当前 DA 浓度 (baseline DA for both batches)
         current_da_val = DA_BASELINE
         if current_time >= da_onset:
             current_da_val = float(da_level)
@@ -623,10 +434,18 @@ def run_dynamic_d1_kernel(
         s_d1 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D1)))
 
         # C. 更新 alpha_D1 (Langmuir 受体结合动力学)
-        alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1)
+
+        
+        
+        
+        alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1, EC50_D1, BETA)
 
         # D. 更新 alpha_D2 (Langmuir 受体结合动力学)
-        alpha_d2 = compute_alpha_d2_step_langmuir(alpha_d2, da_t, current_time, da_onset, dt, k_on_d2, k_off_d2)
+
+        
+        
+        
+        alpha_d2 = compute_alpha_d2_step_langmuir(alpha_d2, da_t, current_time, da_onset, dt, k_on_d2, k_off_d2, EC50_D2, BETA)
 
         # E. 组装调节参数
         # mod_R: D1 区域 R_eff = R_base*(1+EPS_D1*alpha_d1), D2 区域 R_eff = R_base*(1-EPS_D2*alpha_d2)
@@ -691,38 +510,44 @@ def run_dynamic_d1_d2_kernel(
     dt: float,
     record_indices: torch.Tensor,
     n_exc: int,
+    params: torch.Tensor,
 ):
     """
     D1 + D2 受体动力学仿真内核。
-    - D1: 一阶动力学 (τ_on=30876ms / τ_off=164472ms)
-    - D2: 一阶动力学 (τ_on=10000ms / τ_off=50000ms)
-    Batch 0 = Control (0 nM), Batch 1 = Experiment (da_level nM)
+    - D1: 一阶动力学 (Langmuir)
+    - D2: 一阶动力学 (Langmuir)
+    Batch 0 = Control (baseline), Batch 1 = Experiment (da_level nM)
     """
-    # --- 药理学常数 ---
-    EC50_D1 = 4.0
-    EC50_D2 = 8.0
-    BETA = 1.0
-    EPS_D1, EPS_D2 = 0.15, 0.10   # D1: Gain 增强比例; D2: Gain 减弱比例
-    BIAS_D1, BIAS_D2 = 12.0, -10.0
-    LAM_D1, LAM_D2 = 0.3, 0.2
-    # --- D1 Langmuir 动力学参数 ---
-    TAU_ON_D1 = 30876.1
-    TAU_OFF_D1 = 164472.5
-    k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)   # D1 binding rate (ms⁻¹)
-    k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)  # D1 unbinding rate (ms⁻¹)
-    # --- D2 Langmuir 动力学参数 ---
-    TAU_ON_D2 = 10000.0
-    TAU_OFF_D2 = 50000.0
-    k_on_d2  = 1.0 / TAU_ON_D2   # D2 binding rate (ms⁻¹)
-    k_off_d2 = 1.0 / TAU_OFF_D2  # D2 unbinding rate (ms⁻¹)
-
-    # --- LIF 参数 ---
-    # R_base: 基础膜电阻 (GΩ = mV/pA), V in mV, I in pA
-    # τ_m = R_base * C_m: E 神经元 τ_m = 0.1 GΩ * 250 pF = 25 ms
-    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
-    R_base, tau_syn, t_ref = 0.1, 5.0, 5.0  # R_base unit: GΩ (= mV/pA)
-    bg_mean, bg_std = 200.0, 25.0  # V_ss=-50mV=V_th, critical-point drive
-    C_E, C_I = 250.0, 90.0  # membrane capacitance (pF): E=250, I=90
+    # --- Unpack params ---
+    V_rest   = float(params[0])
+    V_reset  = float(params[1])
+    V_th     = float(params[2])
+    R_base   = float(params[3])
+    tau_syn  = float(params[4])
+    t_ref    = float(params[5])
+    bg_mean  = float(params[6])
+    bg_std   = float(params[7])
+    C_E      = float(params[8])
+    C_I      = float(params[9])
+    EC50_D1  = float(params[10])
+    EC50_D2  = float(params[11])
+    BETA     = float(params[12])
+    EPS_D1   = float(params[13])
+    EPS_D2   = float(params[14])
+    BIAS_D1  = float(params[15])
+    BIAS_D2  = float(params[16])
+    LAM_D1   = float(params[17])
+    LAM_D2   = float(params[18])
+    TAU_ON_D1  = float(params[19])
+    TAU_OFF_D1 = float(params[20])
+    TAU_ON_D2  = float(params[21])
+    TAU_OFF_D2 = float(params[22])
+    DA_BASELINE = float(params[23])
+    # --- Derived Langmuir kinetics ---
+    k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
+    k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
+    k_on_d2  = 1.0 / TAU_ON_D2
+    k_off_d2 = 1.0 / TAU_OFF_D2
 
     # --- 初始化 ---
     N = W_t.shape[0]
@@ -753,18 +578,17 @@ def run_dynamic_d1_d2_kernel(
     for i in range(steps):
         current_time = i * dt
 
-        # A. 当前 DA 浓度 (baseline=2nM for both batches)
-        DA_BASELINE = 2.0
+        # A. 当前 DA 浓度 (baseline DA for both batches)
         current_da_val = DA_BASELINE
         if current_time >= da_onset:
             current_da_val = float(da_level)
         da_t = torch.tensor([[DA_BASELINE], [current_da_val]], device=W_t.device)
 
         # B. 更新 alpha_D1 (Langmuir 受体结合动力学)
-        alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1)
+        alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1, EC50_D1, BETA)
 
         # C. 更新 alpha_D2 (Langmuir 受体结合动力学)
-        alpha_d2 = compute_alpha_d2_step_langmuir(alpha_d2, da_t, current_time, da_onset, dt, k_on_d2, k_off_d2)
+        alpha_d2 = compute_alpha_d2_step_langmuir(alpha_d2, da_t, current_time, da_onset, dt, k_on_d2, k_off_d2, EC50_D2, BETA)
 
         # D. 组装调节参数
         # mod_R: D1 区域 R_eff = R_base*(1+EPS_D1*alpha_d1), D2 区域 R_eff = R_base*(1-EPS_D2*alpha_d2)
@@ -844,40 +668,41 @@ def run_dynamic_d1_d2_kernel_two_stage(
     dt: float,
     record_indices: torch.Tensor,
     n_exc: int,
+    params: torch.Tensor,
 ):
     """
     D1 + D2 receptor kinetics kernel with two-stage DA dosing.
-
-    DA schedule for Experiment batch (Batch 1):
-      [0, da_onset)          → 0 nM
-      [da_onset, phase2_onset) → da_level_1 nM  (resting-state DA)
-      [phase2_onset, end)    → da_level_2 nM  (DA challenge)
-
-    Control batch (Batch 0) always receives 0 nM.
     """
-    # --- Pharmacology constants ---
-    EC50_D1 = 4.0
-    EC50_D2 = 8.0
-    BETA = 1.0
-    EPS_D1, EPS_D2 = 0.15, 0.10
-    BIAS_D1, BIAS_D2 = 12.0, -10.0
-    LAM_D1, LAM_D2 = 0.3, 0.2
-    # --- D1 Langmuir kinetics ---
-    TAU_ON_D1 = 30876.1
-    TAU_OFF_D1 = 164472.5
+    # --- Unpack params ---
+    V_rest   = float(params[0])
+    V_reset  = float(params[1])
+    V_th     = float(params[2])
+    R_base   = float(params[3])
+    tau_syn  = float(params[4])
+    t_ref    = float(params[5])
+    bg_mean  = float(params[6])
+    bg_std   = float(params[7])
+    C_E      = float(params[8])
+    C_I      = float(params[9])
+    EC50_D1  = float(params[10])
+    EC50_D2  = float(params[11])
+    BETA     = float(params[12])
+    EPS_D1   = float(params[13])
+    EPS_D2   = float(params[14])
+    BIAS_D1  = float(params[15])
+    BIAS_D2  = float(params[16])
+    LAM_D1   = float(params[17])
+    LAM_D2   = float(params[18])
+    TAU_ON_D1  = float(params[19])
+    TAU_OFF_D1 = float(params[20])
+    TAU_ON_D2  = float(params[21])
+    TAU_OFF_D2 = float(params[22])
+    DA_BASELINE = float(params[23])
+    # --- Derived Langmuir kinetics ---
     k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
     k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
-    # --- D2 Langmuir kinetics ---
-    TAU_ON_D2 = 10000.0
-    TAU_OFF_D2 = 50000.0
     k_on_d2  = 1.0 / TAU_ON_D2
     k_off_d2 = 1.0 / TAU_OFF_D2
-
-    # --- LIF parameters ---
-    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
-    R_base, tau_syn, t_ref = 0.1, 5.0, 5.0
-    bg_mean, bg_std = 200.0, 25.0
-    C_E, C_I = 250.0, 90.0
 
     # --- Initialization ---
     N = W_t.shape[0]
@@ -906,8 +731,7 @@ def run_dynamic_d1_d2_kernel_two_stage(
     for i in range(steps):
         current_time = i * dt
 
-        # A. Current DA concentration (two-stage schedule, baseline=2nM)
-        DA_BASELINE = 2.0
+        # A. Current DA concentration (two-stage schedule)
         current_da_val = DA_BASELINE
         if current_time >= phase2_onset:
             current_da_val = float(da_level_2)
@@ -916,10 +740,10 @@ def run_dynamic_d1_d2_kernel_two_stage(
         da_t = torch.tensor([[DA_BASELINE], [current_da_val]], device=W_t.device)
 
         # B. Update alpha_D1 (Langmuir receptor binding kinetics)
-        alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1)
+        alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1, EC50_D1, BETA)
 
         # C. Update alpha_D2 (Langmuir receptor binding kinetics)
-        alpha_d2 = compute_alpha_d2_step_langmuir(alpha_d2, da_t, current_time, da_onset, dt, k_on_d2, k_off_d2)
+        alpha_d2 = compute_alpha_d2_step_langmuir(alpha_d2, da_t, current_time, da_onset, dt, k_on_d2, k_off_d2, EC50_D2, BETA)
 
         # D. Assemble modulation parameters
         mod_R = R_base * (torch.ones((batch_size, N), device=W_t.device)
@@ -987,40 +811,41 @@ def run_dynamic_d1_d2_kernel_from_state(
     dt: float,
     record_indices: torch.Tensor,
     n_exc: int,
+    params: torch.Tensor,
 ):
     """
     D1 + D2 receptor kinetics kernel resuming from a checkpoint state.
-
-    Args:
-        init_state: (2, 3N+2) packed tensor from a previous kernel's final_state.
-                    Layout: [V(2,N) | I_syn(2,N) | t_last_spike(2,N) | alpha_d1(2,1) | alpha_d2(2,1)]
-        da_level:   New DA concentration (nM) to apply from da_onset.
-        da_onset:   Time (ms) when new DA starts (relative to this simulation's t=0).
-        duration:   Total simulation time (ms) for this continuation run.
     """
-    # --- Pharmacology constants ---
-    EC50_D1 = 4.0
-    EC50_D2 = 8.0
-    BETA = 1.0
-    EPS_D1, EPS_D2 = 0.15, 0.10
-    BIAS_D1, BIAS_D2 = 12.0, -10.0
-    LAM_D1, LAM_D2 = 0.3, 0.2
-    # --- D1 Langmuir kinetics ---
-    TAU_ON_D1 = 30876.1
-    TAU_OFF_D1 = 164472.5
+    # --- Unpack params ---
+    V_rest   = float(params[0])
+    V_reset  = float(params[1])
+    V_th     = float(params[2])
+    R_base   = float(params[3])
+    tau_syn  = float(params[4])
+    t_ref    = float(params[5])
+    bg_mean  = float(params[6])
+    bg_std   = float(params[7])
+    C_E      = float(params[8])
+    C_I      = float(params[9])
+    EC50_D1  = float(params[10])
+    EC50_D2  = float(params[11])
+    BETA     = float(params[12])
+    EPS_D1   = float(params[13])
+    EPS_D2   = float(params[14])
+    BIAS_D1  = float(params[15])
+    BIAS_D2  = float(params[16])
+    LAM_D1   = float(params[17])
+    LAM_D2   = float(params[18])
+    TAU_ON_D1  = float(params[19])
+    TAU_OFF_D1 = float(params[20])
+    TAU_ON_D2  = float(params[21])
+    TAU_OFF_D2 = float(params[22])
+    DA_BASELINE = float(params[23])
+    # --- Derived Langmuir kinetics ---
     k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
     k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
-    # --- D2 Langmuir kinetics ---
-    TAU_ON_D2 = 10000.0
-    TAU_OFF_D2 = 50000.0
     k_on_d2  = 1.0 / TAU_ON_D2
     k_off_d2 = 1.0 / TAU_OFF_D2
-
-    # --- LIF parameters ---
-    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
-    R_base, tau_syn, t_ref = 0.1, 5.0, 5.0
-    bg_mean, bg_std = 200.0, 25.0
-    C_E, C_I = 250.0, 90.0
 
     # --- Unpack initial state ---
     N = W_t.shape[0]
@@ -1055,18 +880,17 @@ def run_dynamic_d1_d2_kernel_from_state(
     for i in range(steps):
         current_time = i * dt
 
-        # A. Current DA concentration (baseline=2nM for both batches)
-        DA_BASELINE = 2.0
+        # A. Current DA concentration (baseline DA for both batches)
         current_da_val = DA_BASELINE
         if current_time >= da_onset:
             current_da_val = float(da_level)
         da_t = torch.tensor([[DA_BASELINE], [current_da_val]], device=W_t.device)
 
         # B. Update alpha_D1 (Langmuir receptor binding kinetics)
-        alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1)
+        alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1, EC50_D1, BETA)
 
         # C. Update alpha_D2 (Langmuir receptor binding kinetics)
-        alpha_d2 = compute_alpha_d2_step_langmuir(alpha_d2, da_t, current_time, da_onset, dt, k_on_d2, k_off_d2)
+        alpha_d2 = compute_alpha_d2_step_langmuir(alpha_d2, da_t, current_time, da_onset, dt, k_on_d2, k_off_d2, EC50_D2, BETA)
 
         # D. Assemble modulation parameters
         mod_R = R_base * (torch.ones((batch_size, N), device=W_t.device)
@@ -1141,47 +965,43 @@ def run_dynamic_d1_d2_kernel_pulse(
     record_indices: torch.Tensor,
     n_exc: int,
     alpha_record_interval: int,
+    params: torch.Tensor,
 ):
     """
     DA pulse experiment kernel resuming from checkpoint.
-
     Both batches start from the same checkpoint state (DA=da_base steady-state).
     - Batch 0 (Control): maintains da_base throughout
     - Batch 1 (Experiment): da_base → da_pulse → da_base
-
-    Args:
-        init_state: (2, 3N+2) packed tensor from checkpoint.
-        da_base:    Baseline DA concentration (nM), e.g. 2.0
-        da_pulse:   Pulse DA concentration (nM), e.g. 15.0
-        pulse_onset:  Time (ms) when pulse starts
-        pulse_offset: Time (ms) when pulse ends
-        duration:   Total simulation time (ms)
-        alpha_record_interval: Record alpha every N steps (to save memory)
-
-    Returns:
-        spike_records, v_traces, final_state, alpha_d1_trace, alpha_d2_trace
     """
-    # --- Pharmacology constants ---
-    EC50_D1 = 4.0
-    EC50_D2 = 8.0
-    BETA = 1.0
-    EPS_D1, EPS_D2 = 0.15, 0.10
-    BIAS_D1, BIAS_D2 = 12.0, -10.0
-    LAM_D1, LAM_D2 = 0.3, 0.2
-    TAU_ON_D1 = 30876.1
-    TAU_OFF_D1 = 164472.5
+    # --- Unpack params ---
+    V_rest   = float(params[0])
+    V_reset  = float(params[1])
+    V_th     = float(params[2])
+    R_base   = float(params[3])
+    tau_syn  = float(params[4])
+    t_ref    = float(params[5])
+    bg_mean  = float(params[6])
+    bg_std   = float(params[7])
+    C_E      = float(params[8])
+    C_I      = float(params[9])
+    EC50_D1  = float(params[10])
+    EC50_D2  = float(params[11])
+    BETA     = float(params[12])
+    EPS_D1   = float(params[13])
+    EPS_D2   = float(params[14])
+    BIAS_D1  = float(params[15])
+    BIAS_D2  = float(params[16])
+    LAM_D1   = float(params[17])
+    LAM_D2   = float(params[18])
+    TAU_ON_D1  = float(params[19])
+    TAU_OFF_D1 = float(params[20])
+    TAU_ON_D2  = float(params[21])
+    TAU_OFF_D2 = float(params[22])
+    # --- Derived Langmuir kinetics ---
     k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
     k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
-    TAU_ON_D2 = 10000.0
-    TAU_OFF_D2 = 50000.0
     k_on_d2  = 1.0 / TAU_ON_D2
     k_off_d2 = 1.0 / TAU_OFF_D2
-
-    # --- LIF parameters ---
-    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
-    R_base, tau_syn, t_ref = 0.1, 5.0, 5.0
-    bg_mean, bg_std = 200.0, 25.0
-    C_E, C_I = 250.0, 90.0
 
     # --- Unpack initial state ---
     N = W_t.shape[0]
@@ -1313,40 +1133,42 @@ def run_dynamic_d1_d2_kernel_sine(
     record_indices: torch.Tensor,
     n_exc: int,
     alpha_record_interval: int,
+    params: torch.Tensor,
 ):
     """
     Sinusoidal DA input experiment kernel.
-
     - Batch 0 (Control): constant da_base
     - Batch 1 (Experiment): da_base + amplitude * sin(2π * freq * t)
-
-    Args:
-        da_base:      Baseline DA (nM)
-        da_amplitude: Sine wave amplitude (nM)
-        da_freq_hz:   Frequency in Hz
-        alpha_record_interval: Record alpha every N steps
     """
-    # --- Pharmacology constants ---
-    EC50_D1 = 4.0
-    EC50_D2 = 8.0
-    BETA = 1.0
-    EPS_D1, EPS_D2 = 0.15, 0.10
-    BIAS_D1, BIAS_D2 = 12.0, -10.0
-    LAM_D1, LAM_D2 = 0.3, 0.2
-    TAU_ON_D1 = 30876.1
-    TAU_OFF_D1 = 164472.5
+    # --- Unpack params ---
+    V_rest   = float(params[0])
+    V_reset  = float(params[1])
+    V_th     = float(params[2])
+    R_base   = float(params[3])
+    tau_syn  = float(params[4])
+    t_ref    = float(params[5])
+    bg_mean  = float(params[6])
+    bg_std   = float(params[7])
+    C_E      = float(params[8])
+    C_I      = float(params[9])
+    EC50_D1  = float(params[10])
+    EC50_D2  = float(params[11])
+    BETA     = float(params[12])
+    EPS_D1   = float(params[13])
+    EPS_D2   = float(params[14])
+    BIAS_D1  = float(params[15])
+    BIAS_D2  = float(params[16])
+    LAM_D1   = float(params[17])
+    LAM_D2   = float(params[18])
+    TAU_ON_D1  = float(params[19])
+    TAU_OFF_D1 = float(params[20])
+    TAU_ON_D2  = float(params[21])
+    TAU_OFF_D2 = float(params[22])
+    # --- Derived Langmuir kinetics ---
     k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
     k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
-    TAU_ON_D2 = 10000.0
-    TAU_OFF_D2 = 50000.0
     k_on_d2  = 1.0 / TAU_ON_D2
     k_off_d2 = 1.0 / TAU_OFF_D2
-
-    # --- LIF parameters ---
-    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
-    R_base, tau_syn, t_ref = 0.1, 5.0, 5.0
-    bg_mean, bg_std = 200.0, 25.0
-    C_E, C_I = 250.0, 90.0
 
     PI = 3.141592653589793
 
@@ -1498,53 +1320,44 @@ def run_dynamic_d1_d2_kernel_pulse_stim(
     record_indices: torch.Tensor,
     n_exc: int,
     alpha_record_interval: int,
+    params: torch.Tensor,
 ):
     """
     DA pulse + external stimulus injection kernel resuming from checkpoint.
-
     Both batches start from the same checkpoint state (DA=da_base steady-state).
     - Batch 0 (Control): maintains da_base throughout
     - Batch 1 (Experiment): da_base → da_pulse → da_base
-
     Both batches receive the same external stimulus in [stim_onset, stim_offset).
-
-    Args:
-        init_state: (2, 3N+2) packed tensor from checkpoint.
-        da_base:    Baseline DA concentration (nM), e.g. 2.0
-        da_pulse:   Pulse DA concentration (nM), e.g. 15.0
-        pulse_onset:  Time (ms) when DA pulse starts
-        pulse_offset: Time (ms) when DA pulse ends
-        stim_mask:    (N,) float tensor, 1.0 for stimulated neurons, 0.0 otherwise
-        stim_onset:   Time (ms) when external stimulus starts
-        stim_offset:  Time (ms) when external stimulus ends
-        stim_amplitude: Stimulus current amplitude (pA)
-        duration:   Total simulation time (ms)
-        alpha_record_interval: Record alpha every N steps (to save memory)
-
-    Returns:
-        spike_records, v_traces, final_state, alpha_d1_trace, alpha_d2_trace
     """
-    # --- Pharmacology constants ---
-    EC50_D1 = 4.0
-    EC50_D2 = 8.0
-    BETA = 1.0
-    EPS_D1, EPS_D2 = 0.15, 0.10
-    BIAS_D1, BIAS_D2 = 12.0, -10.0
-    LAM_D1, LAM_D2 = 0.3, 0.2
-    TAU_ON_D1 = 30876.1
-    TAU_OFF_D1 = 164472.5
+    # --- Unpack params ---
+    V_rest   = float(params[0])
+    V_reset  = float(params[1])
+    V_th     = float(params[2])
+    R_base   = float(params[3])
+    tau_syn  = float(params[4])
+    t_ref    = float(params[5])
+    bg_mean  = float(params[6])
+    bg_std   = float(params[7])
+    C_E      = float(params[8])
+    C_I      = float(params[9])
+    EC50_D1  = float(params[10])
+    EC50_D2  = float(params[11])
+    BETA     = float(params[12])
+    EPS_D1   = float(params[13])
+    EPS_D2   = float(params[14])
+    BIAS_D1  = float(params[15])
+    BIAS_D2  = float(params[16])
+    LAM_D1   = float(params[17])
+    LAM_D2   = float(params[18])
+    TAU_ON_D1  = float(params[19])
+    TAU_OFF_D1 = float(params[20])
+    TAU_ON_D2  = float(params[21])
+    TAU_OFF_D2 = float(params[22])
+    # --- Derived Langmuir kinetics ---
     k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
     k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
-    TAU_ON_D2 = 10000.0
-    TAU_OFF_D2 = 50000.0
     k_on_d2  = 1.0 / TAU_ON_D2
     k_off_d2 = 1.0 / TAU_OFF_D2
-
-    # --- LIF parameters ---
-    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
-    R_base, tau_syn, t_ref = 0.1, 5.0, 5.0
-    bg_mean, bg_std = 200.0, 25.0
-    C_E, C_I = 250.0, 90.0
 
     # --- Unpack initial state ---
     N = W_t.shape[0]
@@ -1659,81 +1472,3 @@ def run_dynamic_d1_d2_kernel_pulse_stim(
 
     final_state = torch.cat([V, I_syn, t_last_spike, alpha_d1, alpha_d2], dim=1)
     return spike_records[:spike_count], v_traces, final_state, alpha_d1_trace[:alpha_record_idx], alpha_d2_trace[:alpha_record_idx]
-
-
-# ======================================================================
-# 参数一致性校验 (普通 Python 函数, 非 JIT)
-#
-# 由于 @torch.jit.script 无法访问外部模块, kernel 内部必须硬编码参数。
-# 此函数在程序启动时调用, 自动比对 config.py 与 kernel 硬编码值,
-# 若不一致则抛出 AssertionError, 强制开发者同步修改。
-#
-# 调用位置: runners.py 顶部 (import 之后立即调用)
-# ======================================================================
-def verify_kernel_params_consistent() -> None:
-    """
-    校验 kernels.py 中硬编码的参数与 config.py 是否一致。
-    不一致时抛出 AssertionError, 并打印具体差异。
-
-    在 runners.py / main.py 启动时调用一次即可。
-    """
-    import sys
-    import os
-    # 将项目根目录加入 sys.path, 确保能 import config
-    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if _root not in sys.path:
-        sys.path.insert(0, _root)
-    import config as cfg  # type: ignore
-
-    # --- kernel 内部硬编码值 (与各 @jit.script 函数保持一致) ---
-    _KERNEL_PARAMS: dict = {
-        # 受体动力学
-        "TAU_ON_D1":  30876.1,
-        "TAU_OFF_D1": 164472.5,
-        "TAU_ON_D2":  10000.0,
-        "TAU_OFF_D2": 50000.0,
-        "EC50_D1":    4.0,
-        "EC50_D2":    8.0,
-        "BETA":       1.0,
-        # 调节强度
-        "EPS_D1":     0.15,
-        "EPS_D2":     0.10,
-        "BIAS_D1":    12.0,
-        "BIAS_D2":   -10.0,
-        "LAM_D1":     0.3,
-        "LAM_D2":     0.2,
-        # LIF 参数
-        "V_REST":     -70.0,
-        "V_RESET":   -75.0,
-        "V_TH":       -50.0,
-        "R_BASE":     0.1,
-        "C_E":        250.0,
-        "C_I":        90.0,
-        "TAU_SYN":    5.0,
-        "T_REF":      5.0,
-"BG_MEAN":    200.0,
-"BG_STD":     25.0,
-    }
-
-    errors: list = []
-    for name, kernel_val in _KERNEL_PARAMS.items():
-        cfg_val = getattr(cfg, name, None)
-        if cfg_val is None:
-            errors.append(f"  [MISSING] config.{name} not found")
-            continue
-        if abs(float(cfg_val) - float(kernel_val)) > 1e-6:
-            errors.append(
-                f"  [MISMATCH] {name}: config={cfg_val}, kernel={kernel_val}"
-            )
-
-    if errors:
-        msg = (
-            "\n\n[kernels.py] Parameter consistency check FAILED!\n"
-            "The following parameters differ between config.py and kernels.py.\n"
-            "Please update kernels.py to match config.py (or vice versa):\n\n"
-            + "\n".join(errors)
-            + "\n\nHint: Search for the parameter name in kernels.py and update the literal value.\n"
-        )
-        raise AssertionError(msg)
-
-    print("[kernels.py] Parameter consistency check PASSED.")

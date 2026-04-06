@@ -70,7 +70,7 @@ def get_stepped_modulation_params(N, mask_d1, mask_d2, da_levels_active, device)
       1. rest   : 所有 batch 都是 2nM (baseline DA)
       2. active : 按照 da_levels_active 设定 (实验组变高)
     """
-    DA_BASELINE = 2.0
+    DA_BASELINE = config.DA_BASELINE
     batch_size = len(da_levels_active)
     levels_rest = [DA_BASELINE] * batch_size
 
