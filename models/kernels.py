@@ -397,7 +397,7 @@ def run_batch_network(
     # --- LIF 参数 (与 config.py 一致) ---
     V_rest, V_reset, V_th = -70.0, -75.0, -50.0
     R_base, t_ref, tau_syn = 0.1, 5.0, 5.0
-    bg_mean, bg_std = 250.0, 50.0  # [Aligned with Gemini] V_ss=-45mV, super-threshold drive
+    bg_mean, bg_std = 200.0, 25.0  # V_ss=-50mV=V_th, critical-point drive
     C_E, C_I = 250.0, 90.0  # membrane capacitance (pF): E=250, I=90
 
     # --- C_m 向量: (1, N), E 神经元=250, I 神经元=90 ---
@@ -486,7 +486,7 @@ def run_batch_network_stepped(
     # --- LIF 参数 ---
     V_rest, V_reset, V_th = -70.0, -75.0, -50.0
     R_base, t_ref, tau_syn = 0.1, 5.0, 5.0  # R_base unit: GΩ (= mV/pA)
-    bg_mean, bg_std = 250.0, 50.0  # [Aligned with Gemini] V_ss=-45mV, super-threshold drive
+    bg_mean, bg_std = 200.0, 25.0  # V_ss=-50mV=V_th, critical-point drive
     C_E, C_I = 250.0, 90.0  # membrane capacitance (pF): E=250, I=90
 
     # --- C_m 向量: (1, N), E 神经元=250, I 神经元=90 ---
@@ -577,7 +577,11 @@ def run_dynamic_d1_kernel(
     Batch 0 = Control (0 nM), Batch 1 = Experiment (da_level nM)
     """
     # --- 药理学常数 (与 config.py 一致) ---
-    BIAS_D1, BIAS_D2 = 3.0, -3.0
+    EC50_D1 = 4.0
+    EC50_D2 = 8.0
+    BETA = 1.0
+    EPS_D1, EPS_D2 = 0.15, 0.10   # D1: Gain 增强比例; D2: Gain 减弱比例
+    BIAS_D1, BIAS_D2 = 12.0, -10.0
     LAM_D1, LAM_D2 = 0.3, 0.2
     # --- D1 Langmuir 动力学参数 ---
     TAU_ON_D1 = 30876.1
@@ -590,16 +594,11 @@ def run_dynamic_d1_kernel(
     k_on_d2  = 1.0 / TAU_ON_D2   # D2 binding rate (ms⁻¹)
     k_off_d2 = 1.0 / TAU_OFF_D2  # D2 unbinding rate (ms⁻¹)
 
-    EC50_D1 = 4.0
-    EC50_D2 = 8.0
-    BETA = 1.0
-    EPS_D1, EPS_D2 = 0.15, 0.10   # D1: Gain 增强比例; D2: Gain 减弱比例
-    BIAS_D1, BIAS_D2 = 3.0, -3.0
     # R_base: 基础膜电阻 (GΩ = mV/pA), V in mV, I in pA
     # τ_m = R_base * C_m: E 神经元 τ_m = 0.1 GΩ * 250 pF = 25 ms
     V_rest, V_reset, V_th = -70.0, -75.0, -50.0
     R_base, tau_syn, t_ref = 0.1, 5.0, 5.0  # R_base unit: GΩ (= mV/pA)
-    bg_mean, bg_std = 250.0, 50.0  # [Aligned with Gemini] V_ss=-45mV, super-threshold drive
+    bg_mean, bg_std = 200.0, 25.0  # V_ss=-50mV=V_th, critical-point drive
     C_E, C_I = 250.0, 90.0  # membrane capacitance (pF): E=250, I=90
 
     # --- 初始化 ---
@@ -724,7 +723,7 @@ def run_dynamic_d1_d2_kernel(
     EC50_D2 = 8.0
     BETA = 1.0
     EPS_D1, EPS_D2 = 0.15, 0.10   # D1: Gain 增强比例; D2: Gain 减弱比例
-    BIAS_D1, BIAS_D2 = 3.0, -3.0
+    BIAS_D1, BIAS_D2 = 12.0, -10.0
     LAM_D1, LAM_D2 = 0.3, 0.2
     # --- D1 Langmuir 动力学参数 ---
     TAU_ON_D1 = 30876.1
@@ -742,7 +741,7 @@ def run_dynamic_d1_d2_kernel(
     # τ_m = R_base * C_m: E 神经元 τ_m = 0.1 GΩ * 250 pF = 25 ms
     V_rest, V_reset, V_th = -70.0, -75.0, -50.0
     R_base, tau_syn, t_ref = 0.1, 5.0, 5.0  # R_base unit: GΩ (= mV/pA)
-    bg_mean, bg_std = 250.0, 50.0  # [Aligned with Gemini] V_ss=-45mV, super-threshold drive
+    bg_mean, bg_std = 200.0, 25.0  # V_ss=-50mV=V_th, critical-point drive
     C_E, C_I = 250.0, 90.0  # membrane capacitance (pF): E=250, I=90
 
     # --- 初始化 ---
@@ -880,7 +879,7 @@ def run_dynamic_d1_d2_kernel_two_stage(
     EC50_D2 = 8.0
     BETA = 1.0
     EPS_D1, EPS_D2 = 0.15, 0.10
-    BIAS_D1, BIAS_D2 = 3.0, -3.0
+    BIAS_D1, BIAS_D2 = 12.0, -10.0
     LAM_D1, LAM_D2 = 0.3, 0.2
     # --- D1 Langmuir kinetics ---
     TAU_ON_D1 = 30876.1
@@ -896,7 +895,7 @@ def run_dynamic_d1_d2_kernel_two_stage(
     # --- LIF parameters ---
     V_rest, V_reset, V_th = -70.0, -75.0, -50.0
     R_base, tau_syn, t_ref = 0.1, 5.0, 5.0
-    bg_mean, bg_std = 250.0, 50.0
+    bg_mean, bg_std = 200.0, 25.0
     C_E, C_I = 250.0, 90.0
 
     # --- Initialization ---
@@ -1022,7 +1021,7 @@ def run_dynamic_d1_d2_kernel_from_state(
     EC50_D2 = 8.0
     BETA = 1.0
     EPS_D1, EPS_D2 = 0.15, 0.10
-    BIAS_D1, BIAS_D2 = 3.0, -3.0
+    BIAS_D1, BIAS_D2 = 12.0, -10.0
     LAM_D1, LAM_D2 = 0.3, 0.2
     # --- D1 Langmuir kinetics ---
     TAU_ON_D1 = 30876.1
@@ -1038,7 +1037,7 @@ def run_dynamic_d1_d2_kernel_from_state(
     # --- LIF parameters ---
     V_rest, V_reset, V_th = -70.0, -75.0, -50.0
     R_base, tau_syn, t_ref = 0.1, 5.0, 5.0
-    bg_mean, bg_std = 250.0, 50.0
+    bg_mean, bg_std = 200.0, 25.0
     C_E, C_I = 250.0, 90.0
 
     # --- Unpack initial state ---
@@ -1135,6 +1134,552 @@ def run_dynamic_d1_d2_kernel_from_state(
 
 
 # ======================================================================
+# 内核 7: D1 + D2 受体动力学 — DA 脉冲实验 (从 checkpoint 恢复)
+#   DA schedule for Experiment batch (Batch 1):
+#     [0, pulse_onset)        → da_base nM  (maintain resting DA)
+#     [pulse_onset, pulse_off) → da_pulse nM (DA pulse)
+#     [pulse_off, end)        → da_base nM  (DA withdrawal)
+#   Control batch (Batch 0) always maintains da_base nM.
+#
+#   Key difference from from_state kernel: BOTH batches maintain da_base,
+#   only Exp batch receives the pulse. This allows proper comparison.
+# ======================================================================
+@torch.jit.script
+def run_dynamic_d1_d2_kernel_pulse(
+    W_t: torch.Tensor,
+    mask_d1: torch.Tensor,
+    mask_d2: torch.Tensor,
+    init_state: torch.Tensor,
+    da_base: float,
+    da_pulse: float,
+    pulse_onset: float,
+    pulse_offset: float,
+    duration: float,
+    dt: float,
+    record_indices: torch.Tensor,
+    n_exc: int,
+    alpha_record_interval: int,
+):
+    """
+    DA pulse experiment kernel resuming from checkpoint.
+
+    Both batches start from the same checkpoint state (DA=da_base steady-state).
+    - Batch 0 (Control): maintains da_base throughout
+    - Batch 1 (Experiment): da_base → da_pulse → da_base
+
+    Args:
+        init_state: (2, 3N+2) packed tensor from checkpoint.
+        da_base:    Baseline DA concentration (nM), e.g. 2.0
+        da_pulse:   Pulse DA concentration (nM), e.g. 15.0
+        pulse_onset:  Time (ms) when pulse starts
+        pulse_offset: Time (ms) when pulse ends
+        duration:   Total simulation time (ms)
+        alpha_record_interval: Record alpha every N steps (to save memory)
+
+    Returns:
+        spike_records, v_traces, final_state, alpha_d1_trace, alpha_d2_trace
+    """
+    # --- Pharmacology constants ---
+    EC50_D1 = 4.0
+    EC50_D2 = 8.0
+    BETA = 1.0
+    EPS_D1, EPS_D2 = 0.15, 0.10
+    BIAS_D1, BIAS_D2 = 12.0, -10.0
+    LAM_D1, LAM_D2 = 0.3, 0.2
+    TAU_ON_D1 = 30876.1
+    TAU_OFF_D1 = 164472.5
+    k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
+    k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
+    TAU_ON_D2 = 10000.0
+    TAU_OFF_D2 = 50000.0
+    k_on_d2  = 1.0 / TAU_ON_D2
+    k_off_d2 = 1.0 / TAU_OFF_D2
+
+    # --- LIF parameters ---
+    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
+    R_base, tau_syn, t_ref = 0.1, 5.0, 5.0
+    bg_mean, bg_std = 200.0, 25.0
+    C_E, C_I = 250.0, 90.0
+
+    # --- Unpack initial state ---
+    N = W_t.shape[0]
+    batch_size = 2
+    steps = int(duration / dt)
+
+    C_m = torch.full((1, N), C_I, device=W_t.device)
+    C_m[0, :n_exc] = C_E
+
+    V = init_state[:, :N].clone()
+    I_syn = init_state[:, N:2*N].clone()
+    t_last_spike = torch.full((batch_size, N), -1000.0, device=W_t.device)
+    alpha_d1 = init_state[:, 3*N:3*N+1].clone()
+    alpha_d2 = init_state[:, 3*N+1:3*N+2].clone()
+
+    decay_factor = float(torch.exp(torch.tensor(-dt / tau_syn)))
+
+    max_spikes = int(steps * N * batch_size * 0.15)
+    spike_records = torch.zeros((max_spikes, 3), device=W_t.device, dtype=torch.long)
+    spike_count = 0
+    num_record = record_indices.shape[0]
+    v_traces = torch.zeros((steps, num_record), device=W_t.device)
+
+    # Alpha trace recording (subsampled to save memory)
+    n_alpha_records = steps // alpha_record_interval + 1
+    alpha_d1_trace = torch.zeros((n_alpha_records, batch_size), device=W_t.device)
+    alpha_d2_trace = torch.zeros((n_alpha_records, batch_size), device=W_t.device)
+    alpha_record_idx = 0
+
+    # --- Time-step loop ---
+    for i in range(steps):
+        current_time = i * dt
+
+        # A. DA concentration schedule
+        # Control (Batch 0): always da_base
+        # Experiment (Batch 1): da_base → da_pulse → da_base
+        da_ctrl = da_base
+        if current_time >= pulse_onset and current_time < pulse_offset:
+            da_exp = da_pulse
+        else:
+            da_exp = da_base
+        da_t = torch.tensor([[da_ctrl], [da_exp]], device=W_t.device)
+
+        # B. Compute Sigmoid targets for BOTH batches (no zeroing of control!)
+        s_d1 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D1)))
+        s_d2 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D2)))
+
+        # C. Update alpha_D1 (Langmuir) — manual inline to avoid control-batch zeroing
+        bind_d1 = k_on_d1 * s_d1 * (1.0 - alpha_d1)
+        unbind_d1 = k_off_d1 * alpha_d1
+        alpha_d1 = alpha_d1 + (bind_d1 - unbind_d1) * dt
+        alpha_d1 = torch.clamp(alpha_d1, 0.0, 1.0)
+
+        # D. Update alpha_D2 (Langmuir) — manual inline
+        bind_d2 = k_on_d2 * s_d2 * (1.0 - alpha_d2)
+        unbind_d2 = k_off_d2 * alpha_d2
+        alpha_d2 = alpha_d2 + (bind_d2 - unbind_d2) * dt
+        alpha_d2 = torch.clamp(alpha_d2, 0.0, 1.0)
+
+        # Record alpha traces
+        if i % alpha_record_interval == 0 and alpha_record_idx < n_alpha_records:
+            alpha_d1_trace[alpha_record_idx, 0] = alpha_d1[0, 0]
+            alpha_d1_trace[alpha_record_idx, 1] = alpha_d1[1, 0]
+            alpha_d2_trace[alpha_record_idx, 0] = alpha_d2[0, 0]
+            alpha_d2_trace[alpha_record_idx, 1] = alpha_d2[1, 0]
+            alpha_record_idx += 1
+
+        # E. Assemble modulation parameters
+        mod_R = R_base * (torch.ones((batch_size, N), device=W_t.device)
+                          + (EPS_D1 * alpha_d1) * mask_d1
+                          - (EPS_D2 * alpha_d2) * mask_d2)
+        I_mod = torch.zeros((batch_size, N), device=W_t.device)
+        scale_syn = torch.ones((batch_size, N), device=W_t.device)
+        I_mod += (BIAS_D1 * alpha_d1) * mask_d1
+        scale_syn += (LAM_D1 * alpha_d1) * mask_d1
+        I_mod += (BIAS_D2 * alpha_d2) * mask_d2
+        scale_syn -= (LAM_D2 * alpha_d2) * mask_d2
+
+        # F. LIF exact integration
+        I_syn = I_syn * decay_factor
+        I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
+        I_total = (I_syn * scale_syn) + I_bg + I_mod
+
+        R_eff = mod_R
+        V_inf = V_rest + R_eff * I_total
+        tau_m = R_eff * C_m
+        decay_v = torch.exp(-dt / tau_m)
+        V_new = V_inf + (V - V_inf) * decay_v
+        is_refractory = (current_time - t_last_spike) <= t_ref
+        V = torch.where(is_refractory, torch.tensor(V_reset, device=W_t.device), V_new)
+
+        for k in range(num_record):
+            v_traces[i, k] = V[record_indices[k, 0], record_indices[k, 1]]
+
+        spikes = V > V_th
+        if spikes.any():
+            indices = torch.nonzero(spikes)
+            num_now = indices.shape[0]
+            if spike_count + num_now < max_spikes:
+                spike_records[spike_count : spike_count + num_now, 0] = i
+                spike_records[spike_count : spike_count + num_now, 1] = indices[:, 0]
+                spike_records[spike_count : spike_count + num_now, 2] = indices[:, 1]
+                spike_count += num_now
+            V[spikes] = V_reset
+            t_last_spike[spikes] = torch.tensor(current_time, device=W_t.device)
+            I_syn += torch.matmul(spikes.float(), W_t)
+
+    final_state = torch.cat([V, I_syn, t_last_spike, alpha_d1, alpha_d2], dim=1)
+    return spike_records[:spike_count], v_traces, final_state, alpha_d1_trace[:alpha_record_idx], alpha_d2_trace[:alpha_record_idx]
+
+
+# ======================================================================
+# 内核 8: D1 + D2 受体动力学 — 正弦波 DA 输入 (从 checkpoint 恢复)
+#   DA(t) = da_base + amplitude * sin(2π * freq * t)
+#   用于测试网络对不同频率 DA 波动的响应 (低通滤波特性)
+#   Control batch maintains constant da_base.
+# ======================================================================
+@torch.jit.script
+def run_dynamic_d1_d2_kernel_sine(
+    W_t: torch.Tensor,
+    mask_d1: torch.Tensor,
+    mask_d2: torch.Tensor,
+    init_state: torch.Tensor,
+    da_base: float,
+    da_amplitude: float,
+    da_freq_hz: float,
+    duration: float,
+    dt: float,
+    record_indices: torch.Tensor,
+    n_exc: int,
+    alpha_record_interval: int,
+):
+    """
+    Sinusoidal DA input experiment kernel.
+
+    - Batch 0 (Control): constant da_base
+    - Batch 1 (Experiment): da_base + amplitude * sin(2π * freq * t)
+
+    Args:
+        da_base:      Baseline DA (nM)
+        da_amplitude: Sine wave amplitude (nM)
+        da_freq_hz:   Frequency in Hz
+        alpha_record_interval: Record alpha every N steps
+    """
+    # --- Pharmacology constants ---
+    EC50_D1 = 4.0
+    EC50_D2 = 8.0
+    BETA = 1.0
+    EPS_D1, EPS_D2 = 0.15, 0.10
+    BIAS_D1, BIAS_D2 = 12.0, -10.0
+    LAM_D1, LAM_D2 = 0.3, 0.2
+    TAU_ON_D1 = 30876.1
+    TAU_OFF_D1 = 164472.5
+    k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
+    k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
+    TAU_ON_D2 = 10000.0
+    TAU_OFF_D2 = 50000.0
+    k_on_d2  = 1.0 / TAU_ON_D2
+    k_off_d2 = 1.0 / TAU_OFF_D2
+
+    # --- LIF parameters ---
+    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
+    R_base, tau_syn, t_ref = 0.1, 5.0, 5.0
+    bg_mean, bg_std = 200.0, 25.0
+    C_E, C_I = 250.0, 90.0
+
+    PI = 3.141592653589793
+
+    # --- Unpack initial state ---
+    N = W_t.shape[0]
+    batch_size = 2
+    steps = int(duration / dt)
+
+    C_m = torch.full((1, N), C_I, device=W_t.device)
+    C_m[0, :n_exc] = C_E
+
+    V = init_state[:, :N].clone()
+    I_syn = init_state[:, N:2*N].clone()
+    t_last_spike = torch.full((batch_size, N), -1000.0, device=W_t.device)
+    alpha_d1 = init_state[:, 3*N:3*N+1].clone()
+    alpha_d2 = init_state[:, 3*N+1:3*N+2].clone()
+
+    decay_factor = float(torch.exp(torch.tensor(-dt / tau_syn)))
+
+    max_spikes = int(steps * N * batch_size * 0.15)
+    spike_records = torch.zeros((max_spikes, 3), device=W_t.device, dtype=torch.long)
+    spike_count = 0
+    num_record = record_indices.shape[0]
+    v_traces = torch.zeros((steps, num_record), device=W_t.device)
+
+    n_alpha_records = steps // alpha_record_interval + 1
+    alpha_d1_trace = torch.zeros((n_alpha_records, batch_size), device=W_t.device)
+    alpha_d2_trace = torch.zeros((n_alpha_records, batch_size), device=W_t.device)
+    da_trace = torch.zeros((n_alpha_records,), device=W_t.device)
+    alpha_record_idx = 0
+
+    # Convert freq from Hz to ms⁻¹: freq_ms = freq_hz / 1000
+    freq_ms = da_freq_hz / 1000.0
+
+    # --- Time-step loop ---
+    for i in range(steps):
+        current_time = i * dt
+
+        # A. DA concentration: sinusoidal for Exp, constant for Ctrl
+        da_sine = da_base + da_amplitude * torch.sin(
+            torch.tensor(2.0 * PI * freq_ms * current_time, device=W_t.device))
+        da_sine = torch.clamp(da_sine, min=torch.tensor(0.1, device=W_t.device))  # DA >= 0.1 nM
+        da_ctrl_val: float = float(da_base)
+        da_exp_val: float = float(da_sine.item())
+        da_t = torch.tensor([[da_ctrl_val], [da_exp_val]], device=W_t.device)
+
+        # B. Sigmoid targets
+        s_d1 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D1)))
+        s_d2 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D2)))
+
+        # C. Update alpha_D1 (Langmuir)
+        bind_d1 = k_on_d1 * s_d1 * (1.0 - alpha_d1)
+        unbind_d1 = k_off_d1 * alpha_d1
+        alpha_d1 = alpha_d1 + (bind_d1 - unbind_d1) * dt
+        alpha_d1 = torch.clamp(alpha_d1, 0.0, 1.0)
+
+        # D. Update alpha_D2 (Langmuir)
+        bind_d2 = k_on_d2 * s_d2 * (1.0 - alpha_d2)
+        unbind_d2 = k_off_d2 * alpha_d2
+        alpha_d2 = alpha_d2 + (bind_d2 - unbind_d2) * dt
+        alpha_d2 = torch.clamp(alpha_d2, 0.0, 1.0)
+
+        # Record traces
+        if i % alpha_record_interval == 0 and alpha_record_idx < n_alpha_records:
+            alpha_d1_trace[alpha_record_idx, 0] = alpha_d1[0, 0]
+            alpha_d1_trace[alpha_record_idx, 1] = alpha_d1[1, 0]
+            alpha_d2_trace[alpha_record_idx, 0] = alpha_d2[0, 0]
+            alpha_d2_trace[alpha_record_idx, 1] = alpha_d2[1, 0]
+            da_trace[alpha_record_idx] = da_sine.item()
+            alpha_record_idx += 1
+
+        # E. Assemble modulation parameters
+        mod_R = R_base * (torch.ones((batch_size, N), device=W_t.device)
+                          + (EPS_D1 * alpha_d1) * mask_d1
+                          - (EPS_D2 * alpha_d2) * mask_d2)
+        I_mod = torch.zeros((batch_size, N), device=W_t.device)
+        scale_syn = torch.ones((batch_size, N), device=W_t.device)
+        I_mod += (BIAS_D1 * alpha_d1) * mask_d1
+        scale_syn += (LAM_D1 * alpha_d1) * mask_d1
+        I_mod += (BIAS_D2 * alpha_d2) * mask_d2
+        scale_syn -= (LAM_D2 * alpha_d2) * mask_d2
+
+        # F. LIF exact integration
+        I_syn = I_syn * decay_factor
+        I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
+        I_total = (I_syn * scale_syn) + I_bg + I_mod
+
+        R_eff = mod_R
+        V_inf = V_rest + R_eff * I_total
+        tau_m = R_eff * C_m
+        decay_v = torch.exp(-dt / tau_m)
+        V_new = V_inf + (V - V_inf) * decay_v
+        is_refractory = (current_time - t_last_spike) <= t_ref
+        V = torch.where(is_refractory, torch.tensor(V_reset, device=W_t.device), V_new)
+
+        for k in range(num_record):
+            v_traces[i, k] = V[record_indices[k, 0], record_indices[k, 1]]
+
+        spikes = V > V_th
+        if spikes.any():
+            indices = torch.nonzero(spikes)
+            num_now = indices.shape[0]
+            if spike_count + num_now < max_spikes:
+                spike_records[spike_count : spike_count + num_now, 0] = i
+                spike_records[spike_count : spike_count + num_now, 1] = indices[:, 0]
+                spike_records[spike_count : spike_count + num_now, 2] = indices[:, 1]
+                spike_count += num_now
+            V[spikes] = V_reset
+            t_last_spike[spikes] = torch.tensor(current_time, device=W_t.device)
+            I_syn += torch.matmul(spikes.float(), W_t)
+
+    final_state = torch.cat([V, I_syn, t_last_spike, alpha_d1, alpha_d2], dim=1)
+    return spike_records[:spike_count], v_traces, final_state, alpha_d1_trace[:alpha_record_idx], alpha_d2_trace[:alpha_record_idx], da_trace[:alpha_record_idx]
+
+
+# ======================================================================
+# 内核 9: D1 + D2 受体动力学 — DA 脉冲 + 外部刺激注入 (从 checkpoint 恢复)
+#
+#   科学目的: 测试 D1 余晖窗口对工作记忆持续性活动的门控作用
+#
+#   DA schedule (same as kernel 7):
+#     Batch 0 (Control): maintains da_base throughout
+#     Batch 1 (Experiment): da_base → da_pulse → da_base
+#
+#   External stimulus:
+#     在 [stim_onset, stim_offset) 时间窗内, 给 stim_mask 标记的神经元
+#     注入额外电流 stim_amplitude (pA)。
+#     Batch 0 和 Batch 1 都接收相同的刺激 (差异仅来自 DA 调制)。
+#
+#   Key feature: stim_mask 是一个 (N,) float tensor (0.0 or 1.0),
+#     允许灵活选择被刺激的神经元子集。
+# ======================================================================
+@torch.jit.script
+def run_dynamic_d1_d2_kernel_pulse_stim(
+    W_t: torch.Tensor,
+    mask_d1: torch.Tensor,
+    mask_d2: torch.Tensor,
+    init_state: torch.Tensor,
+    da_base: float,
+    da_pulse: float,
+    pulse_onset: float,
+    pulse_offset: float,
+    stim_mask: torch.Tensor,
+    stim_onset: float,
+    stim_offset: float,
+    stim_amplitude: float,
+    duration: float,
+    dt: float,
+    record_indices: torch.Tensor,
+    n_exc: int,
+    alpha_record_interval: int,
+):
+    """
+    DA pulse + external stimulus injection kernel resuming from checkpoint.
+
+    Both batches start from the same checkpoint state (DA=da_base steady-state).
+    - Batch 0 (Control): maintains da_base throughout
+    - Batch 1 (Experiment): da_base → da_pulse → da_base
+
+    Both batches receive the same external stimulus in [stim_onset, stim_offset).
+
+    Args:
+        init_state: (2, 3N+2) packed tensor from checkpoint.
+        da_base:    Baseline DA concentration (nM), e.g. 2.0
+        da_pulse:   Pulse DA concentration (nM), e.g. 15.0
+        pulse_onset:  Time (ms) when DA pulse starts
+        pulse_offset: Time (ms) when DA pulse ends
+        stim_mask:    (N,) float tensor, 1.0 for stimulated neurons, 0.0 otherwise
+        stim_onset:   Time (ms) when external stimulus starts
+        stim_offset:  Time (ms) when external stimulus ends
+        stim_amplitude: Stimulus current amplitude (pA)
+        duration:   Total simulation time (ms)
+        alpha_record_interval: Record alpha every N steps (to save memory)
+
+    Returns:
+        spike_records, v_traces, final_state, alpha_d1_trace, alpha_d2_trace
+    """
+    # --- Pharmacology constants ---
+    EC50_D1 = 4.0
+    EC50_D2 = 8.0
+    BETA = 1.0
+    EPS_D1, EPS_D2 = 0.15, 0.10
+    BIAS_D1, BIAS_D2 = 12.0, -10.0
+    LAM_D1, LAM_D2 = 0.3, 0.2
+    TAU_ON_D1 = 30876.1
+    TAU_OFF_D1 = 164472.5
+    k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
+    k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
+    TAU_ON_D2 = 10000.0
+    TAU_OFF_D2 = 50000.0
+    k_on_d2  = 1.0 / TAU_ON_D2
+    k_off_d2 = 1.0 / TAU_OFF_D2
+
+    # --- LIF parameters ---
+    V_rest, V_reset, V_th = -70.0, -75.0, -50.0
+    R_base, tau_syn, t_ref = 0.1, 5.0, 5.0
+    bg_mean, bg_std = 200.0, 25.0
+    C_E, C_I = 250.0, 90.0
+
+    # --- Unpack initial state ---
+    N = W_t.shape[0]
+    batch_size = 2
+    steps = int(duration / dt)
+
+    C_m = torch.full((1, N), C_I, device=W_t.device)
+    C_m[0, :n_exc] = C_E
+
+    V = init_state[:, :N].clone()
+    I_syn = init_state[:, N:2*N].clone()
+    t_last_spike = torch.full((batch_size, N), -1000.0, device=W_t.device)
+    alpha_d1 = init_state[:, 3*N:3*N+1].clone()
+    alpha_d2 = init_state[:, 3*N+1:3*N+2].clone()
+
+    decay_factor = float(torch.exp(torch.tensor(-dt / tau_syn)))
+
+    max_spikes = int(steps * N * batch_size * 0.15)
+    spike_records = torch.zeros((max_spikes, 3), device=W_t.device, dtype=torch.long)
+    spike_count = 0
+    num_record = record_indices.shape[0]
+    v_traces = torch.zeros((steps, num_record), device=W_t.device)
+
+    # Alpha trace recording (subsampled to save memory)
+    n_alpha_records = steps // alpha_record_interval + 1
+    alpha_d1_trace = torch.zeros((n_alpha_records, batch_size), device=W_t.device)
+    alpha_d2_trace = torch.zeros((n_alpha_records, batch_size), device=W_t.device)
+    alpha_record_idx = 0
+
+    # Expand stim_mask to (1, N) for broadcasting with (batch_size, N)
+    stim_mask_2d = stim_mask.unsqueeze(0)  # (1, N)
+
+    # --- Time-step loop ---
+    for i in range(steps):
+        current_time = i * dt
+
+        # A. DA concentration schedule
+        da_ctrl = da_base
+        if current_time >= pulse_onset and current_time < pulse_offset:
+            da_exp = da_pulse
+        else:
+            da_exp = da_base
+        da_t = torch.tensor([[da_ctrl], [da_exp]], device=W_t.device)
+
+        # B. Compute Sigmoid targets for BOTH batches
+        s_d1 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D1)))
+        s_d2 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D2)))
+
+        # C. Update alpha_D1 (Langmuir)
+        bind_d1 = k_on_d1 * s_d1 * (1.0 - alpha_d1)
+        unbind_d1 = k_off_d1 * alpha_d1
+        alpha_d1 = alpha_d1 + (bind_d1 - unbind_d1) * dt
+        alpha_d1 = torch.clamp(alpha_d1, 0.0, 1.0)
+
+        # D. Update alpha_D2 (Langmuir)
+        bind_d2 = k_on_d2 * s_d2 * (1.0 - alpha_d2)
+        unbind_d2 = k_off_d2 * alpha_d2
+        alpha_d2 = alpha_d2 + (bind_d2 - unbind_d2) * dt
+        alpha_d2 = torch.clamp(alpha_d2, 0.0, 1.0)
+
+        # Record alpha traces
+        if i % alpha_record_interval == 0 and alpha_record_idx < n_alpha_records:
+            alpha_d1_trace[alpha_record_idx, 0] = alpha_d1[0, 0]
+            alpha_d1_trace[alpha_record_idx, 1] = alpha_d1[1, 0]
+            alpha_d2_trace[alpha_record_idx, 0] = alpha_d2[0, 0]
+            alpha_d2_trace[alpha_record_idx, 1] = alpha_d2[1, 0]
+            alpha_record_idx += 1
+
+        # E. Assemble modulation parameters
+        mod_R = R_base * (torch.ones((batch_size, N), device=W_t.device)
+                          + (EPS_D1 * alpha_d1) * mask_d1
+                          - (EPS_D2 * alpha_d2) * mask_d2)
+        I_mod = torch.zeros((batch_size, N), device=W_t.device)
+        scale_syn = torch.ones((batch_size, N), device=W_t.device)
+        I_mod += (BIAS_D1 * alpha_d1) * mask_d1
+        scale_syn += (LAM_D1 * alpha_d1) * mask_d1
+        I_mod += (BIAS_D2 * alpha_d2) * mask_d2
+        scale_syn -= (LAM_D2 * alpha_d2) * mask_d2
+
+        # F. External stimulus injection (same for both batches)
+        if current_time >= stim_onset and current_time < stim_offset:
+            I_mod += stim_amplitude * stim_mask_2d  # broadcast (1,N) -> (batch_size,N)
+
+        # G. LIF exact integration
+        I_syn = I_syn * decay_factor
+        I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
+        I_total = (I_syn * scale_syn) + I_bg + I_mod
+
+        R_eff = mod_R
+        V_inf = V_rest + R_eff * I_total
+        tau_m = R_eff * C_m
+        decay_v = torch.exp(-dt / tau_m)
+        V_new = V_inf + (V - V_inf) * decay_v
+        is_refractory = (current_time - t_last_spike) <= t_ref
+        V = torch.where(is_refractory, torch.tensor(V_reset, device=W_t.device), V_new)
+
+        for k in range(num_record):
+            v_traces[i, k] = V[record_indices[k, 0], record_indices[k, 1]]
+
+        spikes = V > V_th
+        if spikes.any():
+            indices = torch.nonzero(spikes)
+            num_now = indices.shape[0]
+            if spike_count + num_now < max_spikes:
+                spike_records[spike_count : spike_count + num_now, 0] = i
+                spike_records[spike_count : spike_count + num_now, 1] = indices[:, 0]
+                spike_records[spike_count : spike_count + num_now, 2] = indices[:, 1]
+                spike_count += num_now
+            V[spikes] = V_reset
+            t_last_spike[spikes] = torch.tensor(current_time, device=W_t.device)
+            I_syn += torch.matmul(spikes.float(), W_t)
+
+    final_state = torch.cat([V, I_syn, t_last_spike, alpha_d1, alpha_d2], dim=1)
+    return spike_records[:spike_count], v_traces, final_state, alpha_d1_trace[:alpha_record_idx], alpha_d2_trace[:alpha_record_idx]
+
+
+# ======================================================================
 # 参数一致性校验 (普通 Python 函数, 非 JIT)
 #
 # 由于 @torch.jit.script 无法访问外部模块, kernel 内部必须硬编码参数。
@@ -1171,8 +1716,8 @@ def verify_kernel_params_consistent() -> None:
         # 调节强度
         "EPS_D1":     0.15,
         "EPS_D2":     0.10,
-"BIAS_D1":    3.0,
-        "BIAS_D2":   -3.0,
+        "BIAS_D1":    12.0,
+        "BIAS_D2":   -10.0,
         "LAM_D1":     0.3,
         "LAM_D2":     0.2,
         # LIF 参数
@@ -1184,8 +1729,8 @@ def verify_kernel_params_consistent() -> None:
         "C_I":        90.0,
         "TAU_SYN":    5.0,
         "T_REF":      5.0,
-"BG_MEAN":    250.0,
-        "BG_STD":     50.0,
+"BG_MEAN":    200.0,
+"BG_STD":     25.0,
     }
 
     errors: list = []
@@ -1210,242 +1755,3 @@ def verify_kernel_params_consistent() -> None:
         raise AssertionError(msg)
 
     print("[kernels.py] Parameter consistency check PASSED.")
-
-
-if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-    import numpy as np
-    import math
-    import os
-    from datetime import datetime
-
-    print("Debugging alpha_d1 / alpha_d2 dynamics (3 methods each)...")
-
-    # ------------------------------------------------------------------ #
-    # 公共参数
-    # ------------------------------------------------------------------ #
-    dt        = 10.0        # ms
-    duration  = 1000000.0  # ms = 1000 s
-    da_onset  = 100000.0   # ms = 100 s
-    da_offset = 300000.0   # ms = 300 s
-    da_level  = 20.0       # nM
-    BETA      = 1.0
-
-    steps       = int(duration / dt)
-    time_points = np.arange(steps) * dt  # ms
-
-    # ------------------------------------------------------------------ #
-    # D1 参数
-    # ------------------------------------------------------------------ #
-    EC50_D1      = 4.0
-    TAU_ON_D1    = 30876.1
-    TAU_OFF_D1   = 164472.5
-    k_on_d1      = 1.0 / (TAU_ON_D1  - 3000)
-    k_off_d1     = 1.0 / (TAU_OFF_D1 + 3000)
-    Kd_D1        = k_off_d1 / k_on_d1
-
-    # ------------------------------------------------------------------ #
-    # D2 参数  (动力学比 D1 快 ~3x; EC50 沿用代码中已有值 8.0 nM)
-    # ------------------------------------------------------------------ #
-    EC50_D2      = 8.0
-    TAU_ON_D2    = 10000.0   # ms — 上升时间常数
-    TAU_OFF_D2   = 50000.0   # ms — 下降时间常数
-    k_on_d2      = 1.0 / TAU_ON_D2    # ≈ 1.0e-4 ms⁻¹
-    k_off_d2     = 1.0 / TAU_OFF_D2   # ≈ 2.0e-5 ms⁻¹
-    Kd_D2        = k_off_d2 / k_on_d2
-
-    # ------------------------------------------------------------------ #
-    # 初始化状态张量
-    # ------------------------------------------------------------------ #
-    alpha_d1_tau  = torch.zeros((2, 1))
-    alpha_d1_k    = torch.zeros((2, 1))
-    alpha_d1_lang = torch.zeros((2, 1))
-
-    alpha_d2_tau  = torch.zeros((2, 1))
-    alpha_d2_k    = torch.zeros((2, 1))
-    alpha_d2_lang = torch.zeros((2, 1))
-
-    # 记录轨迹
-    tr_d1_tau,  tr_d1_k,  tr_d1_lang  = [], [], []
-    tr_d2_tau,  tr_d2_k,  tr_d2_lang  = [], [], []
-    tr_s_d1,    tr_s_d2               = [], []
-    tr_ss_d1_lang, tr_ss_d2_lang      = [], []
-
-    # ------------------------------------------------------------------ #
-    # 时间步循环
-    # ------------------------------------------------------------------ #
-    for i in range(steps):
-        current_time = i * dt
-        current_da   = da_level if (da_onset <= current_time < da_offset) else 0.0
-        da_t         = torch.tensor([[0.0], [current_da]])
-
-        # Sigmoid 目标值
-        s_d1_val = (1.0 / (1.0 + math.exp(-BETA * (current_da - EC50_D1)))
-                    if current_time >= da_onset else 0.0)
-        s_d2_val = (1.0 / (1.0 + math.exp(-BETA * (current_da - EC50_D2)))
-                    if current_time >= da_onset else 0.0)
-        tr_s_d1.append(s_d1_val)
-        tr_s_d2.append(s_d2_val)
-
-        # Langmuir 稳态值
-        tr_ss_d1_lang.append(
-            (k_on_d1 * s_d1_val) / (k_on_d1 * s_d1_val + k_off_d1) if s_d1_val > 0 else 0.0
-        )
-        tr_ss_d2_lang.append(
-            (k_on_d2 * s_d2_val) / (k_on_d2 * s_d2_val + k_off_d2) if s_d2_val > 0 else 0.0
-        )
-
-        # --- D1 三种方法 ---
-        alpha_d1_tau = compute_alpha_d1_step(
-            alpha_d1_tau, da_t, current_time, da_onset, dt)
-        tr_d1_tau.append(alpha_d1_tau[1, 0].item())
-
-        alpha_d1_k = compute_alpha_d1_step_kon_koff(
-            alpha_d1_k, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1)
-        tr_d1_k.append(alpha_d1_k[1, 0].item())
-
-        alpha_d1_lang = compute_alpha_d1_step_langmuir(
-            alpha_d1_lang, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1)
-        tr_d1_lang.append(alpha_d1_lang[1, 0].item())
-
-        # --- D2 三种方法 ---
-        alpha_d2_tau = compute_alpha_d2_step(
-            alpha_d2_tau, da_t, current_time, da_onset, dt)
-        tr_d2_tau.append(alpha_d2_tau[1, 0].item())
-
-        alpha_d2_k = compute_alpha_d2_step_kon_koff(
-            alpha_d2_k, da_t, current_time, da_onset, dt, k_on_d2, k_off_d2)
-        tr_d2_k.append(alpha_d2_k[1, 0].item())
-
-        alpha_d2_lang = compute_alpha_d2_step_langmuir(
-            alpha_d2_lang, da_t, current_time, da_onset, dt, k_on_d2, k_off_d2)
-        tr_d2_lang.append(alpha_d2_lang[1, 0].item())
-
-    # 转 numpy
-    arr_d1_tau,  arr_d1_k,  arr_d1_lang  = map(np.array, [tr_d1_tau,  tr_d1_k,  tr_d1_lang])
-    arr_d2_tau,  arr_d2_k,  arr_d2_lang  = map(np.array, [tr_d2_tau,  tr_d2_k,  tr_d2_lang])
-    arr_s_d1,    arr_s_d2               = map(np.array, [tr_s_d1,    tr_s_d2])
-    arr_ss_d1,   arr_ss_d2              = map(np.array, [tr_ss_d1_lang, tr_ss_d2_lang])
-
-    # ------------------------------------------------------------------ #
-    # 绘图: 双子图 — 上 D1, 下 D2
-    # ------------------------------------------------------------------ #
-    fig, axes = plt.subplots(2, 1, figsize=(18, 12), sharex=True)
-    fig.suptitle(
-        f"Receptor Dynamics Comparison: D1 vs D2  |  DA={da_level} nM  "
-        f"|  DA window [{int(da_onset/1000)}s – {int(da_offset/1000)}s]",
-        fontsize=13, fontweight='bold'
-    )
-
-    def _annotate_peak(ax, arr, t_arr, color, label):
-        """在峰值处标注数值。"""
-        idx = arr.argmax()
-        ax.scatter([t_arr[idx]], [arr[idx]], color=color, zorder=7, s=40)
-        ax.annotate(f"peak={arr[idx]:.3f}",
-                    xy=(t_arr[idx], arr[idx]),
-                    xytext=(t_arr[idx] + 12000, arr[idx] + 0.03),
-                    arrowprops=dict(arrowstyle='->', color=color, lw=0.8),
-                    fontsize=8, color=color)
-
-    for ax_idx, (ax, receptor, ec50,
-                 tau_on, tau_off, k_on, k_off, Kd,
-                 arr_tau, arr_k, arr_lang,
-                 arr_s, arr_ss) in enumerate(zip(
-        axes,
-        ['D1', 'D2'],
-        [EC50_D1, EC50_D2],
-        [TAU_ON_D1, TAU_ON_D2],
-        [TAU_OFF_D1, TAU_OFF_D2],
-        [k_on_d1, k_on_d2],
-        [k_off_d1, k_off_d2],
-        [Kd_D1, Kd_D2],
-        [arr_d1_tau, arr_d2_tau],
-        [arr_d1_k,   arr_d2_k],
-        [arr_d1_lang, arr_d2_lang],
-        [arr_s_d1,   arr_s_d2],
-        [arr_ss_d1,  arr_ss_d2],
-    )):
-        ax.ticklabel_format(style='plain', axis='x')
-
-        # Sigmoid 目标值
-        ax.plot(time_points, arr_s, lw=1.5, ls='-', color='black', alpha=0.45, zorder=1,
-                label=f"Target s_{receptor} (Sigmoid, EC50={ec50} nM)")
-
-        # Langmuir 稳态线
-        ax.plot(time_points, arr_ss, lw=1.5, ls=':', color='red', alpha=0.65, zorder=1,
-                label=f"Langmuir α_ss = s/(s+Kd),  Kd={Kd:.4f}")
-
-        # Method 2: k_on/k_off (粗橙色)
-        ax.plot(time_points, arr_k, lw=4.0, ls='-', color='darkorange', alpha=0.50, zorder=2,
-                label=f"Method 2 (k_on/k_off): k_on={k_on:.2e}, k_off={k_off:.2e} ms⁻¹")
-
-        # Method 1: tau (蓝色虚线)
-        ax.plot(time_points, arr_tau, lw=1.8, ls='--', color='steelblue', zorder=3,
-                label=f"Method 1 (tau): τ_on={tau_on:,.0f} ms, τ_off={tau_off:,.0f} ms")
-
-        # Method 3: Langmuir (绿色实线)
-        ax.plot(time_points, arr_lang, lw=1.8, ls='-', color='seagreen', zorder=4,
-                label=f"Method 3 (Langmuir): dα/dt = k_on·s·(1-α) - k_off·α")
-
-        # 给药 / 撤药竖线
-        ax.axvline(x=da_onset,  color='green', ls=':', lw=1.5,
-                   label=f"DA onset  ({int(da_onset):,} ms)")
-        ax.axvline(x=da_offset, color='gray',  ls=':', lw=1.5,
-                   label=f"DA offset ({int(da_offset):,} ms)")
-
-        # 峰值标注
-        _annotate_peak(ax, arr_tau,  time_points, 'steelblue', 'tau')
-        _annotate_peak(ax, arr_lang, time_points, 'seagreen',  'Langmuir')
-
-        # t½ 标注 (tau 方法)
-        t_half_on  = tau_on  * math.log(2)
-        t_half_off = tau_off * math.log(2)
-        for t_abs, arr_ref, color, marker, label_txt in [
-            (da_onset  + t_half_on,  arr_tau, 'purple', '^', f"t½ on  = {t_half_on:,.0f} ms"),
-            (da_offset + t_half_off, arr_tau, 'brown',  'v', f"t½ off = {t_half_off:,.0f} ms"),
-        ]:
-            if t_abs < time_points[-1]:
-                idx = min(int(t_abs / dt), len(arr_ref) - 1)
-                ax.axvline(x=t_abs, color=color, ls='-.', lw=1.2)
-                ax.scatter([t_abs], [arr_ref[idx]], color=color, zorder=6, marker=marker, s=50)
-                ax.annotate(label_txt,
-                            xy=(t_abs, arr_ref[idx]),
-                            xytext=(t_abs + 8000, arr_ref[idx] + (0.05 if marker == '^' else -0.07)),
-                            arrowprops=dict(arrowstyle='->', color=color, lw=0.8),
-                            fontsize=8, color=color)
-
-        ax.set_ylabel(f"α_{receptor} activation", fontsize=11)
-        ax.set_title(
-            f"{receptor} Receptor  |  EC50={ec50} nM  |  "
-            f"τ_on={tau_on:,.0f} ms  τ_off={tau_off:,.0f} ms  |  Kd={Kd:.4f}",
-            fontsize=10
-        )
-        ax.legend(fontsize=7.5, loc='upper right', ncol=2)
-        ax.grid(True, alpha=0.35)
-
-    axes[-1].set_xlabel("Time (ms)", fontsize=11)
-    plt.tight_layout()
-
-    # ------------------------------------------------------------------ #
-    # 保存
-    # ------------------------------------------------------------------ #
-    output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tmp")
-    os.makedirs(output_dir, exist_ok=True)
-    timestamp   = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = os.path.join(output_dir, f"alpha_d1_d2_debug_{timestamp}.png")
-    plt.savefig(output_file, dpi=150)
-    print(f"Plot saved to {output_file}")
-
-    # 打印关键数值
-    s_d1_peak = 1.0 / (1.0 + math.exp(-BETA * (da_level - EC50_D1)))
-    s_d2_peak = 1.0 / (1.0 + math.exp(-BETA * (da_level - EC50_D2)))
-    print(f"\n--- D1 ---")
-    print(f"  s_D1 target (peak)   = {s_d1_peak:.4f}")
-    print(f"  Langmuir α_ss        = {(k_on_d1*s_d1_peak)/(k_on_d1*s_d1_peak+k_off_d1):.4f}  (Kd={Kd_D1:.4f})")
-    print(f"  tau method peak      = {arr_d1_tau.max():.4f}")
-    print(f"  Langmuir method peak = {arr_d1_lang.max():.4f}")
-    print(f"\n--- D2 ---")
-    print(f"  s_D2 target (peak)   = {s_d2_peak:.4f}")
-    print(f"  Langmuir α_ss        = {(k_on_d2*s_d2_peak)/(k_on_d2*s_d2_peak+k_off_d2):.4f}  (Kd={Kd_D2:.4f})")
-    print(f"  tau method peak      = {arr_d2_tau.max():.4f}")
-    print(f"  Langmuir method peak = {arr_d2_lang.max():.4f}")

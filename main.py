@@ -26,10 +26,11 @@ DA-PFC 仿真主入口 (SNN Simulation)
      python main.py --da 2.0 --duration 500 --save-ckpt
      # 完成后额外保存 checkpoint 到 checkpoints/
 
-  2) 从 checkpoint 恢复 — 切换到新 DA 浓度:
+  2) 从 checkpoint 恢复 — 切换到新 DA 浓度 (需显式指定 --resume):
      python main.py --resume checkpoints/ckpt_DA2nM_500s.pkl --da 15.0
      # 载入 DA=2nM 稳态, 施加 DA=15nM 继续仿真 100s (默认)
      # 可加 --duration 200 指定恢复后的仿真时长
+     # 注意: 不传 --resume 则不会走 resume 模式
 
   3) 两阶段给药 — 同一次仿真内切换 DA:
      python main.py --da 2.0 --da2 15.0
@@ -79,7 +80,7 @@ def parse_args():
     parser.add_argument("--da", type=float, default=3.0,
                         help="给药浓度 (nM), 默认 3.0")
     parser.add_argument("--resume", type=str, default=None,
-                        help="从checkpoint恢复仿真: 指定raw_data.pkl路径. "
+                        help="从checkpoint恢复仿真: 指定pkl路径. "
                              "加载之前仿真的最终状态, 施加--da指定的新DA浓度")
     parser.add_argument("--da2", type=float, default=None,
                         help="两阶段模式: 第二阶段DA浓度 (nM). 指定此参数时启用两阶段给药, "

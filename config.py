@@ -42,13 +42,13 @@ TAU_SYN = 5.0       # 突触时间常数 (ms)
 T_REF = 5.0         # 不应期 (ms)
 
 # 背景输入
-# V_ss = V_rest + R_base * I_bg = -70 + 0.1 * 190 = -51 mV ≈ V_th(-50mV)
-# 噪声: BG_STD=25 pA → σ_V = R_base * BG_STD = 0.1 * 25 = 2.5 mV，可有效驱动自发发放
-# [对齐 Gemini 版本] Gemini: bg_mean=25, bg_std=5 (无量纲)
-# 等效换算: V_ss = V_rest + R_base * bg_mean = -70 + 0.1*250 = -45 mV (超阈值)
-# 噪声: R_base * bg_std = 0.1 * 50 = 5 mV (与 Gemini 相同比例)
-BG_MEAN = 250.0     # 背景电流均值 (pA)  [V_ss=-45mV, 与Gemini等效超阈值驱动]
-BG_STD = 50.0       # 背景电流标准差 (pA)  [噪声幅度与Gemini等效]
+# V_ss = V_rest + R_base * I_bg = -70 + 0.1 * 200 = -50 mV = V_th
+# 临界点驱动: V_inf ≈ V_th, 发放由噪声波动驱动 (fluctuation-driven regime)
+# 噪声: BG_STD=25 pA → σ_V = R_base * BG_STD = 0.1 * 25 = 2.5 mV
+# 理论发放率 (Siegert): E ~8-10 Hz, I ~25-30 Hz
+# DA BIAS 调制: 20 pA × α ≈ 13 pA → ΔV_inf ≈ 1.3 mV ≈ 0.5σ → ΔRate >15%
+BG_MEAN = 200.0     # 背景电流均值 (pA)  [V_ss=-50mV, 临界点驱动]
+BG_STD = 25.0       # 背景电流标准差 (pA)  [σ_V=2.5mV, 精细噪声控制]
 
 # ==============================================================================
 # 4. 仿真参数 (Simulation)
@@ -86,11 +86,11 @@ EC50_D2 = 8.0        # D2 半效浓度 (nM)
 EPS_D1 = 0.15        # D1: Gain 增强比例 (alpha=1 时 R_eff = R_base * 1.15)
 EPS_D2 = 0.10        # D2: Gain 减弱比例 (alpha=1 时 R_eff = R_base * 0.90)
 
-BIAS_D1 = 3.0        # D1: 偏置电流 (pA)
-BIAS_D2 = -3.0       # D2: 偏置电流 (pA)
+BIAS_D1 = 12.0       # D1: 偏置电流 (pA) [DA=15nM时: 12*0.65≈7.8pA, ΔV≈+2.8mV]
+BIAS_D2 = -10.0      # D2: 偏置电流 (pA)
 
 LAM_D1 = 0.3         # D1: 突触缩放 (Synaptic Scaling)
-LAM_D2 = 0.2         # D2: 突触缩放
+LAM_D2 = 0.2         # D2: 突触缩放 (Synaptic Scaling)
 
 # ==============================================================================
 # 8. Spike 记录参数

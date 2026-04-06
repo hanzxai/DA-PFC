@@ -1,0 +1,8 @@
+LOG:
+688b8e7 feat: add sweep_da.py and Inverted-U dose-response results (DA 0.5-50nM)
+b8cc24a feat: add sweep_da.py and Inverted-U dose-response results (DA 0.5-50nM)
+6130c55 feat: add --save-ckpt flag, default no checkpoint saving; update .gitignore to track checkpoints/
+5bc6f8a docs: comprehensive README update with full model documentation and code changes - Rewrote README with detailed math formulations (Langmuir kinetics, exact LIF integration) - Documented all 6 simulation modes (static/stepped/D1/D1+D2/two-stage/checkpoint) - Updated parameter tables to match current config (N_E=824, N_I=176, CONN_PROB=0.02) - Added 3x2 combined plotting layout documentation - Added analysis report and typical simulation results - Code updates: plotting, runners, kernels, utils, main
+6eb9eed update: model neurons' nums && higher firing rate
+
+STATUS: CLEAN
