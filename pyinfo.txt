@@ -1,7 +1,0 @@
-/apdcephfs/mmv-video/hoyezhang/miniforge3/bin/python3
-Python 3.13.12
-Traceback (most recent call last):
-  File "<string>", line 1, in <module>
-    import torch; print('torch:', torch.__version__)
-    ^^^^^^^^^^^^
-ModuleNotFoundError: No module named 'torch'

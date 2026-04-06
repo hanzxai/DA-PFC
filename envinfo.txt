@@ -1,3 +1,0 @@
-/data/workspace/miniconda3/envs/myenv/lib/python3.10/site-packages/torch/__init__.py
-/data/workspace/miniconda3/envs/pfc/lib/python3.11/site-packages/torch/__init__.py
-find: ‘/proc/337837/map_files’: Permission denied

@@ -170,7 +170,7 @@ def _run_kernel_with_progress(kernel_fn, kernel_args: tuple, duration_ms: float,
 def run_simulation_in_memory(device_name: str = "cuda:0"):
     """
     静态仿真: 整个时间段 DA 浓度固定不变。
-    Batch 0 = Control (0 nM), Batch 1 = Experiment (10 nM)
+    Batch 0 = Control (2 nM baseline), Batch 1 = Experiment (10 nM)
     """
     device = torch.device(device_name if torch.cuda.is_available() else "cpu")
     print(f"🚀 Simulation running on {device}")
@@ -178,12 +178,13 @@ def run_simulation_in_memory(device_name: str = "cuda:0"):
     duration = config.DEFAULT_DURATION
     dt = config.DT
     FIXED_DA = 10.0
+    DA_BASELINE = 2.0
 
     W_t, mask_d1, mask_d2, groups_info = _init_network(device)
     N = config.N_TOTAL
     record_indices = _build_record_indices(groups_info, device, full=True)
 
-    da_conditions = [0.0, FIXED_DA]
+    da_conditions = [DA_BASELINE, FIXED_DA]
     mod_R, I_mod, scale_syn = get_batch_modulation_params(
         N, mask_d1, mask_d2, da_conditions, device
     )
@@ -211,7 +212,7 @@ def run_simulation_in_memory(device_name: str = "cuda:0"):
 def run_simulation_stepped(device_name: str = "cuda:0", da_level: float = 10.0):
     """
     分步仿真: 在 DA_ONSET 时刻参数瞬时切换。
-    Batch 0 = Control (始终 0 nM), Batch 1 = Experiment
+    Batch 0 = Control (始终 2 nM baseline), Batch 1 = Experiment
     """
     device = torch.device(device_name if torch.cuda.is_available() else "cpu")
     print(f"🚀 Simulation running on {device}")
@@ -219,12 +220,13 @@ def run_simulation_stepped(device_name: str = "cuda:0", da_level: float = 10.0):
     duration = 3000.0
     dt = config.DT
     DA_ONSET = 1000.0
+    DA_BASELINE = 2.0
 
     W_t, mask_d1, mask_d2, groups_info = _init_network(device)
     N = config.N_TOTAL
     record_indices = _build_record_indices(groups_info, device, full=False)
 
-    da_levels_active = [0.0, da_level]
+    da_levels_active = [DA_BASELINE, da_level]
     params_rest, params_active = get_stepped_modulation_params(
         N, mask_d1, mask_d2, da_levels_active, device
     )
@@ -303,7 +305,7 @@ def run_simulation_d1_d2_kinetics(duration: float = None, target_da: float = Non
     D1 + D2 受体动力学仿真:
     - alpha_D1 按 τ_on=30876ms / τ_off=164472ms 缓慢爬升/衰减
     - alpha_D2 按 τ_on=10000ms / τ_off=50000ms 更快响应
-    Batch 0 = Control (0 nM), Batch 1 = Experiment (target_da nM)
+    Batch 0 = Control (2 nM baseline), Batch 1 = Experiment (target_da nM)
     """
     if device is None:
         device = config.DEVICE
@@ -362,7 +364,7 @@ def run_simulation_d1_d2_two_stage(
 ):
     """
     Two-stage DA dosing simulation:
-      Phase 1: [0, da_onset)            → 0 nM (baseline)
+      Phase 1: [0, da_onset)            → 2 nM (baseline DA)
       Phase 2: [da_onset, phase2_onset) → da_level_1 nM (resting-state DA)
       Phase 3: [phase2_onset, end)      → da_level_2 nM (DA challenge)
 
@@ -390,7 +392,7 @@ def run_simulation_d1_d2_two_stage(
 
     print(f"🚀 Simulation running on {device}")
     print(f"   Mode: Two-Stage DA Dosing (D1 + D2 Kinetics)")
-    print(f"   Phase 1: [0, {da_onset:.0f}ms) → 0 nM (baseline)")
+    print(f"   Phase 1: [0, {da_onset:.0f}ms) → 2 nM (baseline DA)")
     print(f"   Phase 2: [{da_onset:.0f}ms, {phase2_onset:.0f}ms) → {da_level_1} nM (resting DA)")
     print(f"   Phase 3: [{phase2_onset:.0f}ms, {duration:.0f}ms) → {da_level_2} nM (DA challenge)")
     print(f"   Total duration: {duration/1000:.1f}s")

@@ -39,11 +39,8 @@ def compute_alpha_d1_step(
     EC50_D1    = 4.0
     BETA       = 1.0
 
-    # 目标值 S(t) — Sigmoid
+    # 目标值 S(t) — Sigmoid (baseline DA=2nM, both batches)
     s_d1 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D1)))
-    if current_time < da_onset:
-        s_d1 = torch.zeros_like(s_d1)
-    s_d1[0] = 0.0  # Control batch 始终为 0
 
     # 一阶动力学: d(alpha_d1)/dt = (s_d1 - alpha_d1) / tau
     diff = s_d1 - alpha_d1
@@ -107,11 +104,8 @@ def compute_alpha_d1_step_kon_koff(
     EC50_D1 = 4.0
     BETA    = 1.0
 
-    # 目标值 S(t) — Sigmoid
+    # 目标值 S(t) — Sigmoid (baseline DA=2nM, both batches)
     s_d1 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D1)))
-    if current_time < da_onset:
-        s_d1 = torch.zeros_like(s_d1)
-    s_d1[0] = 0.0  # Control batch 始终为 0
 
     # 一阶动力学: 上升项 / 下降项分离
     rise_term = torch.clamp(s_d1 - alpha_d1, min=0.0)   # (s_D1 - α)⁺
@@ -170,11 +164,8 @@ def compute_alpha_d1_step_langmuir(
     EC50_D1 = 4.0
     BETA    = 1.0
 
-    # 目标值 S(t) — Sigmoid (DA 浓度对应的激活目标)
+    # 目标值 S(t) — Sigmoid (baseline DA=2nM, both batches)
     s_d1 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D1)))
-    if current_time < da_onset:
-        s_d1 = torch.zeros_like(s_d1)
-    s_d1[0] = 0.0  # Control batch 始终为 0
 
     # Langmuir 动力学: 结合项 - 解离项
     bind_term   = k_on * s_d1 * (1.0 - alpha_d1)   # 结合: 正比于游离受体
@@ -236,11 +227,8 @@ def compute_alpha_d2_step(
     EC50_D2    = 8.0       # nM — D2 半效浓度
     BETA       = 1.0
 
-    # 目标值 S(t) — Sigmoid
+    # 目标值 S(t) — Sigmoid (baseline DA=2nM, both batches)
     s_d2 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D2)))
-    if current_time < da_onset:
-        s_d2 = torch.zeros_like(s_d2)
-    s_d2[0] = 0.0  # Control batch 始终为 0
 
     # 一阶动力学: d(alpha_d2)/dt = (s_d2 - alpha_d2) / tau
     diff = s_d2 - alpha_d2
@@ -296,11 +284,8 @@ def compute_alpha_d2_step_kon_koff(
     EC50_D2 = 8.0
     BETA    = 1.0
 
-    # 目标值 S(t) — Sigmoid
+    # 目标值 S(t) — Sigmoid (baseline DA=2nM, both batches)
     s_d2 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D2)))
-    if current_time < da_onset:
-        s_d2 = torch.zeros_like(s_d2)
-    s_d2[0] = 0.0  # Control batch 始终为 0
 
     # 一阶动力学: 上升项 / 下降项分离
     rise_term = torch.clamp(s_d2 - alpha_d2, min=0.0)   # (s_D2 - α)⁺
@@ -354,11 +339,8 @@ def compute_alpha_d2_step_langmuir(
     EC50_D2 = 8.0
     BETA    = 1.0
 
-    # 目标值 S(t) — Sigmoid
+    # 目标值 S(t) — Sigmoid (baseline DA=2nM, both batches)
     s_d2 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D2)))
-    if current_time < da_onset:
-        s_d2 = torch.zeros_like(s_d2)
-    s_d2[0] = 0.0  # Control batch 始终为 0
 
     # Langmuir 动力学: 结合项 - 解离项
     bind_term   = k_on * s_d2 * (1.0 - alpha_d2)   # 结合: 正比于游离受体
@@ -630,17 +612,15 @@ def run_dynamic_d1_kernel(
     for i in range(steps):
         current_time = i * dt
 
-        # A. 当前 DA 浓度
-        current_da_val = 0.0
+        # A. 当前 DA 浓度 (baseline=2nM for both batches)
+        DA_BASELINE = 2.0
+        current_da_val = DA_BASELINE
         if current_time >= da_onset:
             current_da_val = float(da_level)
-        da_t = torch.tensor([[0.0], [current_da_val]], device=W_t.device)
+        da_t = torch.tensor([[DA_BASELINE], [current_da_val]], device=W_t.device)
 
         # B. 目标值 S(t) — Sigmoid (D1 用于调试参考, D2 由动力学函数内部计算)
         s_d1 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D1)))
-        if current_time < da_onset:
-            s_d1[:] = 0.0
-        s_d1[0] = 0.0  # Control 始终为 0
 
         # C. 更新 alpha_D1 (Langmuir 受体结合动力学)
         alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1)
@@ -773,11 +753,12 @@ def run_dynamic_d1_d2_kernel(
     for i in range(steps):
         current_time = i * dt
 
-        # A. 当前 DA 浓度
-        current_da_val = 0.0
+        # A. 当前 DA 浓度 (baseline=2nM for both batches)
+        DA_BASELINE = 2.0
+        current_da_val = DA_BASELINE
         if current_time >= da_onset:
             current_da_val = float(da_level)
-        da_t = torch.tensor([[0.0], [current_da_val]], device=W_t.device)
+        da_t = torch.tensor([[DA_BASELINE], [current_da_val]], device=W_t.device)
 
         # B. 更新 alpha_D1 (Langmuir 受体结合动力学)
         alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1)
@@ -925,13 +906,14 @@ def run_dynamic_d1_d2_kernel_two_stage(
     for i in range(steps):
         current_time = i * dt
 
-        # A. Current DA concentration (two-stage schedule)
-        current_da_val = 0.0
+        # A. Current DA concentration (two-stage schedule, baseline=2nM)
+        DA_BASELINE = 2.0
+        current_da_val = DA_BASELINE
         if current_time >= phase2_onset:
             current_da_val = float(da_level_2)
         elif current_time >= da_onset:
             current_da_val = float(da_level_1)
-        da_t = torch.tensor([[0.0], [current_da_val]], device=W_t.device)
+        da_t = torch.tensor([[DA_BASELINE], [current_da_val]], device=W_t.device)
 
         # B. Update alpha_D1 (Langmuir receptor binding kinetics)
         alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1)
@@ -1073,12 +1055,12 @@ def run_dynamic_d1_d2_kernel_from_state(
     for i in range(steps):
         current_time = i * dt
 
-        # A. Current DA concentration
-        # Control batch always 0 nM; Exp batch gets da_level after da_onset
-        current_da_val = 0.0
+        # A. Current DA concentration (baseline=2nM for both batches)
+        DA_BASELINE = 2.0
+        current_da_val = DA_BASELINE
         if current_time >= da_onset:
             current_da_val = float(da_level)
-        da_t = torch.tensor([[0.0], [current_da_val]], device=W_t.device)
+        da_t = torch.tensor([[DA_BASELINE], [current_da_val]], device=W_t.device)
 
         # B. Update alpha_D1 (Langmuir receptor binding kinetics)
         alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1)

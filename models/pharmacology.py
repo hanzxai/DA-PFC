@@ -67,11 +67,12 @@ def get_batch_modulation_params(N, mask_d1, mask_d2, da_concs, device):
 def get_stepped_modulation_params(N, mask_d1, mask_d2, da_levels_active, device):
     """
     生成分步给药的两组参数:
-      1. rest   : 所有 batch 都是 0nM (基线)
+      1. rest   : 所有 batch 都是 2nM (baseline DA)
       2. active : 按照 da_levels_active 设定 (实验组变高)
     """
+    DA_BASELINE = 2.0
     batch_size = len(da_levels_active)
-    levels_rest = [0.0] * batch_size
+    levels_rest = [DA_BASELINE] * batch_size
 
     params_rest = _compute_modulation_state(batch_size, N, mask_d1, mask_d2, levels_rest, device)
     params_active = _compute_modulation_state(batch_size, N, mask_d1, mask_d2, da_levels_active, device)
