@@ -212,7 +212,8 @@ def plot_combined_raster(analyzer: PFCAnalyzer, save_dir=None,
 def _draw_da_timeline(ax, analyzer: PFCAnalyzer, batch_idx: int):
     """
     Draw [DA] vs time for the given batch.
-    Constructs the DA schedule from analyzer.cfg based on simulation mode.
+    If data contains a pre-computed 'da_schedule' array, use it directly.
+    Otherwise, constructs the DA schedule from analyzer.cfg based on simulation mode.
     """
     cfg = analyzer.cfg
     mode = cfg.get('mode', '')
@@ -221,6 +222,42 @@ def _draw_da_timeline(ax, analyzer: PFCAnalyzer, batch_idx: int):
     use_seconds = duration > 10000
     scale = 1000.0 if use_seconds else 1.0
     x_label = "Time (s)" if use_seconds else "Time (ms)"
+    dt = analyzer.dt
+
+    # Check if pre-computed DA schedule is available (from waveform experiments)
+    da_schedule = analyzer.data.get('da_schedule', None)
+    if da_schedule is not None:
+        # da_schedule shape: (steps, 2) — col 0 = Ctrl, col 1 = Exp
+        t_all = np.arange(da_schedule.shape[0]) * dt
+        d0 = da_schedule[:, 0]
+        d1 = da_schedule[:, 1]
+        d_plot = d0 if batch_idx == 0 else d1
+        # Subsample for plotting efficiency (max 2000 points)
+        max_pts = 2000
+        if len(d_plot) > max_pts:
+            step = len(d_plot) // max_pts
+            t_plot = t_all[::step]
+            d_plot_sub = d_plot[::step]
+            d0_sub = d0[::step]
+            d1_sub = d1[::step]
+        else:
+            t_plot = t_all
+            d_plot_sub = d_plot
+            d0_sub = d0
+            d1_sub = d1
+        ax.plot(t_plot / scale, d_plot_sub, color='#E91E63', linewidth=2.0, alpha=0.9)
+        ax.fill_between(t_plot / scale, 0, d_plot_sub, color='#E91E63', alpha=0.15)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("[DA] (nM)")
+        ax.set_xlim(0, duration / scale)
+        all_da = np.concatenate([d0_sub, d1_sub])
+        da_max = float(np.max(all_da))
+        da_min = float(np.min(all_da))
+        margin = max((da_max - da_min) * 0.15, 0.5)
+        ax.set_ylim(max(0, da_min - margin), da_max + margin)
+        ax.grid(True, linestyle='--', alpha=0.3)
+        ax.tick_params(axis='both', which='major', labelsize=14)
+        return
 
     if mode == 'dynamic_d1_d2_two_stage':
         phase1_onset = cfg.get('phase1_da_onset', da_onset)
