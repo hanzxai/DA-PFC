@@ -84,8 +84,8 @@ EC50_D2 = 8.0        # D2 半效浓度 (nM)
 # 7. 调节强度参数 (Modulation Strength)
 #    alpha=1.0 时对膜参数的影响幅度
 # ==============================================================================
-EPS_D1 = 0.15        # D1: Gain 增强比例 (alpha=1 时 R_eff = R_base * 1.15)
-EPS_D2 = 0.10        # D2: Gain 减弱比例 (alpha=1 时 R_eff = R_base * 0.90)
+EPS_D1 = 0.015       # D1: Gain 增强比例 (alpha=1 时 R_eff = R_base * 1.015)
+EPS_D2 = 0.01        # D2: Gain 减弱比例 (alpha=1 时 R_eff = R_base * 0.99)
 
 BIAS_D1 = 3.0        # D1: 偏置电流 (pA)
 BIAS_D2 = -3.0       # D2: 偏置电流 (pA)

@@ -207,6 +207,75 @@ def plot_combined_raster(analyzer: PFCAnalyzer, save_dir=None,
 
 
 # ---------------------------------------------------------------------------
+# Helper: draw DA concentration timeline for a single batch
+# ---------------------------------------------------------------------------
+def _draw_da_timeline(ax, analyzer: PFCAnalyzer, batch_idx: int):
+    """
+    Draw [DA] vs time for the given batch.
+    Constructs the DA schedule from analyzer.cfg based on simulation mode.
+    """
+    cfg = analyzer.cfg
+    mode = cfg.get('mode', '')
+    duration = analyzer.duration
+    da_onset = analyzer.da_onset
+    use_seconds = duration > 10000
+    scale = 1000.0 if use_seconds else 1.0
+    x_label = "Time (s)" if use_seconds else "Time (ms)"
+
+    if mode == 'dynamic_d1_d2_two_stage':
+        phase1_onset = cfg.get('phase1_da_onset', da_onset)
+        phase2_onset = cfg.get('phase2_onset', da_onset)
+        da1 = cfg.get('da_level_1', 2.0)
+        da2 = cfg.get('da_level_2', 15.0)
+        ctrl_da = cfg.get('control_da', 0.0)
+        # Batch 0: constant control DA
+        t0 = np.array([0.0, duration])
+        d0 = np.array([ctrl_da, ctrl_da])
+        # Batch 1: 3-phase schedule
+        t1 = np.array([0.0, phase1_onset, phase1_onset, phase2_onset, phase2_onset, duration])
+        d1 = np.array([ctrl_da, ctrl_da, da1, da1, da2, da2])
+    elif mode == 'resume_from_checkpoint':
+        baseline_da = cfg.get('control_da', 2.0)
+        new_da = cfg.get('da_level', 15.0)
+        # Batch 0: constant baseline DA
+        t0 = np.array([0.0, duration])
+        d0 = np.array([baseline_da, baseline_da])
+        # Batch 1: baseline → new DA at onset
+        t1 = np.array([0.0, da_onset, da_onset, duration])
+        d1 = np.array([baseline_da, baseline_da, new_da, new_da])
+    else:
+        # Default: kinetics / ckpt mode
+        ctrl_da = cfg.get('control_da', 0.0)
+        target_da = cfg.get('da_level', 10.0)
+        # Batch 0: constant control DA
+        t0 = np.array([0.0, duration])
+        d0 = np.array([ctrl_da, ctrl_da])
+        # Batch 1: 0 → target DA at onset
+        t1 = np.array([0.0, da_onset, da_onset, duration])
+        d1 = np.array([ctrl_da, ctrl_da, target_da, target_da])
+
+    # Select which batch to draw
+    if batch_idx == 0:
+        t_plot, d_plot = t0, d0
+    else:
+        t_plot, d_plot = t1, d1
+
+    ax.plot(t_plot / scale, d_plot, color='#E91E63', linewidth=2.5, alpha=0.9)
+    ax.fill_between(t_plot / scale, 0, d_plot, color='#E91E63', alpha=0.15)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("[DA] (nM)")
+    ax.set_xlim(0, duration / scale)
+    # Y-axis: add margin above max DA
+    all_da = np.concatenate([d0, d1])
+    da_max = float(np.max(all_da))
+    da_min = float(np.min(all_da))
+    margin = max((da_max - da_min) * 0.15, 0.5)
+    ax.set_ylim(max(0, da_min - margin), da_max + margin)
+    ax.grid(True, linestyle='--', alpha=0.3)
+    ax.tick_params(axis='both', which='major', labelsize=14)
+
+
+# ---------------------------------------------------------------------------
 # 2. Combined Firing Rate Plot (generic helper)
 # ---------------------------------------------------------------------------
 def _plot_combined_rates(analyzer: PFCAnalyzer, group_names: list,
@@ -216,12 +285,13 @@ def _plot_combined_rates(analyzer: PFCAnalyzer, group_names: list,
                          time_win_zoom: float = 5.0,
                          zoom_window: float = 2000.0):
     """
-    Generic 3×2 firing-rate figure.
-    Row 0 = full time-range, Row 1 = Before DA zoom, Row 2 = After DA zoom.
+    Generic 4×2 firing-rate figure.
+    Row 0 = DA concentration timeline (new!)
+    Row 1 = full time-range, Row 2 = Before DA zoom, Row 3 = After DA zoom.
     Col 0 = Control, Col 1 = Exp.
-    Y-axes are unified across all panels.
+    Y-axes are unified across all rate panels.
     """
-    print(f"🎨 Plotting combined {title_prefix} rates (3×2)...")
+    print(f"🎨 Plotting combined {title_prefix} rates (4×2)...")
 
     da_onset = analyzer.da_onset
 
@@ -246,9 +316,23 @@ def _plot_combined_rates(analyzer: PFCAnalyzer, group_names: list,
         'I-D1': '-', 'I-D2': '-', 'I-Other': '-',
     }
 
-    fig, axes = plt.subplots(3, 2, figsize=(32, 28), dpi=200)
+    fig, axes = plt.subplots(4, 2, figsize=(32, 36), dpi=200,
+                              gridspec_kw={'height_ratios': [1, 3, 3, 3]})
 
-    # Define row configs: (is_zoom, zoom_start, zoom_end, label)
+    # ---- Row 0: DA concentration timeline ----
+    for col, batch_idx in enumerate([0, 1]):
+        ax_da = axes[0, col]
+        _draw_da_timeline(ax_da, analyzer, batch_idx)
+        cfg_mode = analyzer.cfg.get('mode', '')
+        if cfg_mode == 'dynamic_d1_d2_two_stage':
+            da1 = analyzer.cfg.get('da_level_1', 0)
+            da2 = analyzer.cfg.get('da_level_2', 0)
+            batch_label = f"Control ({da1} nM)" if batch_idx == 0 else f"Exp ({da1}→{da2} nM)"
+        else:
+            batch_label = f"Control ({analyzer.control_da} nM)" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
+        ax_da.set_title(f"DA Concentration — {batch_label}")
+
+    # Define row configs for rate panels (rows 1-3): (is_zoom, zoom_start, zoom_end, label)
     row_configs = [
         (False, None, None, 'Full'),
         (True, before_start, before_end,
@@ -264,8 +348,8 @@ def _plot_combined_rates(analyzer: PFCAnalyzer, group_names: list,
     y_min_zoom = np.inf
 
     for col, batch_idx in enumerate([0, 1]):
-        for row, (is_zoom, z_start, z_end, _label) in enumerate(row_configs):
-            ax = axes[row, col]
+        for row_offset, (is_zoom, z_start, z_end, _label) in enumerate(row_configs):
+            ax = axes[row_offset + 1, col]  # +1 because row 0 is DA timeline
             tw = time_win_zoom if is_zoom else time_win_full
 
             for grp_name in group_names:
@@ -321,8 +405,8 @@ def _plot_combined_rates(analyzer: PFCAnalyzer, group_names: list,
         ylim_zoom = None
 
     for col, batch_idx in enumerate([0, 1]):
-        for row, (is_zoom, z_start, z_end, row_label) in enumerate(row_configs):
-            ax = axes[row, col]
+        for row_offset, (is_zoom, z_start, z_end, row_label) in enumerate(row_configs):
+            ax = axes[row_offset + 1, col]  # +1 because row 0 is DA timeline
 
             if is_zoom:
                 ax.set_xlim(z_start, z_end)
@@ -362,8 +446,8 @@ def _plot_combined_rates(analyzer: PFCAnalyzer, group_names: list,
                 batch_label = f"Control ({analyzer.control_da} nM)" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
             ax.set_title(f"{title_prefix} — {batch_label} ({row_label})")
 
-            # Legend only on top-left panel to save space
-            if row == 0 and col == 0:
+            # Legend only on first rate row, left panel to save space
+            if row_offset == 0 and col == 0:
                 ax.legend(loc='upper left')
 
     plt.tight_layout()
