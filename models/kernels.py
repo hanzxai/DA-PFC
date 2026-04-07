@@ -343,160 +343,6 @@ def run_batch_network_stepped(
 
 
 # ======================================================================
-# 内核 3: D1 受体动力学 (alpha_D1 遵循一阶 ODE, D2 瞬时)
-# ======================================================================
-@torch.jit.script
-def run_dynamic_d1_kernel(
-    W_t: torch.Tensor,
-    mask_d1: torch.Tensor,
-    mask_d2: torch.Tensor,
-    da_level: float,
-    da_onset: float,
-    duration: float,
-    dt: float,
-    record_indices: torch.Tensor,
-    n_exc: int,
-    params: torch.Tensor,
-):
-    """
-    D1 受体动力学仿真内核。
-    - D1: 一阶动力学 (Langmuir)
-    - D2: 一阶动力学 (Langmuir)
-    Batch 0 = Control (baseline), Batch 1 = Experiment (da_level nM)
-    """
-    # --- Unpack params ---
-    V_rest   = float(params[0])
-    V_reset  = float(params[1])
-    V_th     = float(params[2])
-    R_base   = float(params[3])
-    tau_syn  = float(params[4])
-    t_ref    = float(params[5])
-    bg_mean  = float(params[6])
-    bg_std   = float(params[7])
-    C_E      = float(params[8])
-    C_I      = float(params[9])
-    EC50_D1  = float(params[10])
-    EC50_D2  = float(params[11])
-    BETA     = float(params[12])
-    EPS_D1   = float(params[13])
-    EPS_D2   = float(params[14])
-    BIAS_D1  = float(params[15])
-    BIAS_D2  = float(params[16])
-    LAM_D1   = float(params[17])
-    LAM_D2   = float(params[18])
-    TAU_ON_D1  = float(params[19])
-    TAU_OFF_D1 = float(params[20])
-    TAU_ON_D2  = float(params[21])
-    TAU_OFF_D2 = float(params[22])
-    DA_BASELINE = float(params[23])
-    # --- Derived Langmuir kinetics ---
-    k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
-    k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
-    k_on_d2  = 1.0 / TAU_ON_D2
-    k_off_d2 = 1.0 / TAU_OFF_D2
-
-    # --- 初始化 ---
-    N = W_t.shape[0]
-    batch_size = 2
-    steps = int(duration / dt)
-
-    # --- C_m 向量: (1, N), E 神经元=250, I 神经元=90 ---
-    C_m = torch.full((1, N), C_I, device=W_t.device)
-    C_m[0, :n_exc] = C_E
-
-    # Share identical initial V across batches so baseline is consistent
-    V_init = torch.rand((1, N), device=W_t.device) * (V_th - V_reset) + V_reset
-    V = V_init.expand(batch_size, -1).clone()
-    t_last_spike = torch.full((batch_size, N), -1000.0, device=W_t.device)
-    I_syn = torch.zeros((batch_size, N), device=W_t.device)
-    alpha_d1 = torch.zeros((batch_size, 1), device=W_t.device)
-    alpha_d2 = torch.zeros((batch_size, 1), device=W_t.device)  # D2 动力学状态
-
-    decay_factor = float(torch.exp(torch.tensor(-dt / tau_syn)))
-
-    max_spikes = int(steps * N * batch_size * 0.15)
-    spike_records = torch.zeros((max_spikes, 3), device=W_t.device, dtype=torch.long)
-    spike_count = 0
-    num_record = record_indices.shape[0]
-    v_traces = torch.zeros((steps, num_record), device=W_t.device)
-
-    # --- 时间步循环 ---
-    for i in range(steps):
-        current_time = i * dt
-
-        # A. 当前 DA 浓度 (baseline DA for both batches)
-        current_da_val = DA_BASELINE
-        if current_time >= da_onset:
-            current_da_val = float(da_level)
-        da_t = torch.tensor([[DA_BASELINE], [current_da_val]], device=W_t.device)
-
-        # B. 目标值 S(t) — Sigmoid (D1 用于调试参考, D2 由动力学函数内部计算)
-        s_d1 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D1)))
-
-        # C. 更新 alpha_D1 (Langmuir 受体结合动力学)
-
-        
-        
-        
-        alpha_d1 = compute_alpha_d1_step_langmuir(alpha_d1, da_t, current_time, da_onset, dt, k_on_d1, k_off_d1, EC50_D1, BETA)
-
-        # D. 更新 alpha_D2 (Langmuir 受体结合动力学)
-
-        
-        
-        
-        alpha_d2 = compute_alpha_d2_step_langmuir(alpha_d2, da_t, current_time, da_onset, dt, k_on_d2, k_off_d2, EC50_D2, BETA)
-
-        # E. 组装调节参数
-        # mod_R: D1 区域 R_eff = R_base*(1+EPS_D1*alpha_d1), D2 区域 R_eff = R_base*(1-EPS_D2*alpha_d2)
-        # 非受体区域保持 R_base 不变
-        mod_R = R_base * (torch.ones((batch_size, N), device=W_t.device)
-                          + (EPS_D1 * alpha_d1) * mask_d1
-                          - (EPS_D2 * alpha_d2) * mask_d2)
-        I_mod = torch.zeros((batch_size, N), device=W_t.device)
-        scale_syn = torch.ones((batch_size, N), device=W_t.device)
-
-        I_mod += (BIAS_D1 * alpha_d1) * mask_d1
-        scale_syn += (LAM_D1 * alpha_d1) * mask_d1
-
-        I_mod += (BIAS_D2 * alpha_d2) * mask_d2
-        scale_syn -= (LAM_D2 * alpha_d2) * mask_d2
-
-        # F. LIF exact integration: V_new = V_inf + (V - V_inf) * exp(-dt/tau_m)
-        I_syn = I_syn * decay_factor
-        # Share identical noise across batches for consistent baseline
-        I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
-        I_total = (I_syn * scale_syn) + I_bg + I_mod
-
-        R_eff = mod_R  # mod_R 已包含 R_base，直接作为有效膜电阻
-        # Exact integration: V_new = V_inf + (V - V_inf) * exp(-dt/tau_m)
-        V_inf = V_rest + R_eff * I_total
-        tau_m = R_eff * C_m
-        decay_v = torch.exp(-dt / tau_m)
-        V_new = V_inf + (V - V_inf) * decay_v
-        is_refractory = (current_time - t_last_spike) <= t_ref
-        V = torch.where(is_refractory, torch.tensor(V_reset, device=W_t.device), V_new)
-
-        for k in range(num_record):
-            v_traces[i, k] = V[record_indices[k, 0], record_indices[k, 1]]
-
-        spikes = V > V_th
-        if spikes.any():
-            indices = torch.nonzero(spikes)
-            num_now = indices.shape[0]
-            if spike_count + num_now < max_spikes:
-                spike_records[spike_count : spike_count + num_now, 0] = i
-                spike_records[spike_count : spike_count + num_now, 1] = indices[:, 0]
-                spike_records[spike_count : spike_count + num_now, 2] = indices[:, 1]
-                spike_count += num_now
-            V[spikes] = V_reset
-            t_last_spike[spikes] = torch.tensor(current_time, device=W_t.device)
-            I_syn += torch.matmul(spikes.float(), W_t)
-
-    return spike_records[:spike_count], v_traces
-
-
-# ======================================================================
 # 内核 4: D1 + D2 受体动力学 (alpha_D1 和 alpha_D2 均遵循一阶 ODE)
 # ======================================================================
 @torch.jit.script
@@ -1148,6 +994,7 @@ def run_dynamic_d1_d2_kernel_pulse(
     TAU_OFF_D1 = float(params[20])
     TAU_ON_D2  = float(params[21])
     TAU_OFF_D2 = float(params[22])
+    DA_BASELINE = float(params[23])
     # --- Derived Langmuir kinetics ---
     k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
     k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
@@ -1315,6 +1162,7 @@ def run_dynamic_d1_d2_kernel_sine(
     TAU_OFF_D1 = float(params[20])
     TAU_ON_D2  = float(params[21])
     TAU_OFF_D2 = float(params[22])
+    DA_BASELINE = float(params[23])
     # --- Derived Langmuir kinetics ---
     k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
     k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
@@ -1504,6 +1352,7 @@ def run_dynamic_d1_d2_kernel_pulse_stim(
     TAU_OFF_D1 = float(params[20])
     TAU_ON_D2  = float(params[21])
     TAU_OFF_D2 = float(params[22])
+    DA_BASELINE = float(params[23])
     # --- Derived Langmuir kinetics ---
     k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
     k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)

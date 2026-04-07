@@ -5,13 +5,13 @@
 所有药理学常量从 config 模块读取，避免硬编码重复。
 """
 import torch
-import numpy as np
+import math
 import config
 
 
 def _sigmoid_activation(da: float, ec50: float) -> float:
     """计算单个浓度的 Sigmoid 激活度"""
-    return 1.0 / (1.0 + np.exp(-config.BETA * (da - ec50)))
+    return 1.0 / (1.0 + math.exp(-config.BETA * (da - ec50)))
 
 
 def _compute_modulation_state(batch_size, N, mask_d1, mask_d2, da_levels, device):

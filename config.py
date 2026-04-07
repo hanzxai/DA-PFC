@@ -87,8 +87,8 @@ EC50_D2 = 8.0        # D2 半效浓度 (nM)
 EPS_D1 = 0.15        # D1: Gain 增强比例 (alpha=1 时 R_eff = R_base * 1.15)
 EPS_D2 = 0.10        # D2: Gain 减弱比例 (alpha=1 时 R_eff = R_base * 0.90)
 
-BIAS_D1 = 12.0       # D1: 偏置电流 (pA) [DA=15nM时: 12*0.65≈7.8pA, ΔV≈+2.8mV]
-BIAS_D2 = -10.0      # D2: 偏置电流 (pA)
+BIAS_D1 = 3.0        # D1: 偏置电流 (pA)
+BIAS_D2 = -3.0       # D2: 偏置电流 (pA)
 
 LAM_D1 = 0.3         # D1: 突触缩放 (Synaptic Scaling)
 LAM_D2 = 0.2         # D2: 突触缩放 (Synaptic Scaling)

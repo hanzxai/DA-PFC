@@ -14,7 +14,6 @@ from models.network import create_network_structure
 from models.kernels import (
     run_batch_network,
     run_batch_network_stepped,
-    run_dynamic_d1_kernel,
     run_dynamic_d1_d2_kernel,
     run_dynamic_d1_d2_kernel_ckpt,
     run_dynamic_d1_d2_kernel_two_stage,
@@ -248,56 +247,7 @@ def run_simulation_stepped(device_name: str = "cuda:0", da_level: float = 10.0):
 
 
 # ==============================================================================
-# Runner 3: D1 受体动力学 (alpha_D1 遵循一阶 ODE, D2 瞬时) [旧版, 保留兼容]
-# ==============================================================================
-
-def run_simulation_d1_kinetics(duration: float = None, target_da: float = None):
-    """
-    D1 受体动力学仿真:
-    alpha_D1 按 Tau_on/Tau_off 缓慢爬升/衰减, D2 保持瞬时。
-    """
-    device = config.DEVICE
-
-    if duration is None:
-        duration = 100000.0  # 100 秒 (因为 Tau ≈ 30s)
-    if target_da is None:
-        target_da = 10.0
-
-    dt = config.DT
-    da_onset = config.DEFAULT_DA_ONSET
-
-    print(f"🚀 Simulation running on {device}")
-    print(f"   Mode: Dynamic D1 Kinetics (Tau_rise={config.TAU_ON_D1}ms)")
-    print(f"   Duration: {duration}ms, Target DA: {target_da}nM")
-
-    W_t, mask_d1, mask_d2, groups_info = _init_network(device)
-    record_indices = _build_record_indices(groups_info, device, full=True)
-
-    t0 = time.time()
-    kp = config.build_kernel_params(device)
-    all_spikes, v_traces = _run_kernel_with_progress(
-        run_dynamic_d1_kernel,
-        (W_t, mask_d1, mask_d2,
-         float(target_da), float(da_onset), float(duration), dt,
-         record_indices, config.N_E, kp),
-        duration, dt,
-    )
-    _sync_and_report(t0)
-
-    return _pack_data(
-        cfg_dict={
-            'N_E': config.N_E, 'N_I': config.N_I,
-            'duration': duration, 'dt': dt,
-            'da_onset': da_onset, 'da_level': target_da,
-            'mode': 'dynamic_d1_kinetics',
-        },
-        mask_d1=mask_d1, mask_d2=mask_d2, groups_info=groups_info,
-        spikes=all_spikes, v_traces=v_traces, record_indices=record_indices,
-    )
-
-
-# ==============================================================================
-# Runner 4: D1 + D2 受体动力学 (alpha_D1 和 alpha_D2 均遵循一阶 ODE)
+# Runner 3: D1 + D2 受体动力学 (alpha_D1 和 alpha_D2 均遵循一阶 ODE)
 # ==============================================================================
 
 def run_simulation_d1_d2_kinetics(duration: float = None, target_da: float = None, device: torch.device = None):
@@ -568,6 +518,14 @@ def run_simulation_from_checkpoint(
 
     # Move checkpoint state to device
     init_state = ckpt_data['final_state'].to(device)
+
+    # ── Fix: Both batches must resume from the DA-steady-state ──
+    # The ckpt kernel uses Batch 0 = 0 nM (pure control) and Batch 1 = target DA.
+    # For resume, we need BOTH batches to start from the DA steady-state,
+    # so copy Batch 1's state into Batch 0.
+    if init_state.shape[0] >= 2:
+        print(f"   ⚙️  Overwriting Batch 0 state with Batch 1 (DA steady-state)")
+        init_state[0] = init_state[1].clone()
 
     t0 = time.time()
     kp = config.build_kernel_params(device)

@@ -54,6 +54,8 @@ import argparse
 import time
 import torch
 import config
+import os
+import numpy as np
 from simulation.runners import (
     run_simulation_d1_d2_kinetics,
     run_simulation_d1_d2_ckpt,
@@ -98,7 +100,7 @@ def parse_args():
     parser.add_argument("--gpu", type=int, default=0,
                         help="GPU卡号, 默认 0. 无GPU或输入无效将回退到CPU")
     parser.add_argument("--save-ckpt", action="store_true", default=False,
-                        help="仓真结束后保存 checkpoint 到 checkpoints/ 目录 (默认不保存)")
+                        help="仿真结束后保存 checkpoint 到 checkpoints/ 目录 (默认不保存)")
     parser.add_argument("--da-baseline", type=float, default=None,
                         help="覆盖基线 DA 浓度 (nM), 默认使用 config.DA_BASELINE=2.0")
     return parser.parse_args()
@@ -153,41 +155,84 @@ def main():
     save_dir = setup_experiment_folder(tag=exp_tag)
 
     # 2. 实验配置
+    # Common physiological parameters (always saved for reproducibility)
+    common_params = {
+        # LIF neuron parameters
+        "V_REST": config.V_REST,
+        "V_RESET": config.V_RESET,
+        "V_TH": config.V_TH,
+        "R_BASE": config.R_BASE,
+        "C_E": config.C_E,
+        "C_I": config.C_I,
+        "TAU_SYN": config.TAU_SYN,
+        "T_REF": config.T_REF,
+        "BG_MEAN": config.BG_MEAN,
+        "BG_STD": config.BG_STD,
+        # Pharmacology
+        "EC50_D1": config.EC50_D1,
+        "EC50_D2": config.EC50_D2,
+        "BETA": config.BETA,
+        "EPS_D1": config.EPS_D1,
+        "EPS_D2": config.EPS_D2,
+        "BIAS_D1": config.BIAS_D1,
+        "BIAS_D2": config.BIAS_D2,
+        "LAM_D1": config.LAM_D1,
+        "LAM_D2": config.LAM_D2,
+        # Receptor kinetics
+        "TAU_ON_D1": config.TAU_ON_D1,
+        "TAU_OFF_D1": config.TAU_OFF_D1,
+        "TAU_ON_D2": config.TAU_ON_D2,
+        "TAU_OFF_D2": config.TAU_OFF_D2,
+        # DA baseline
+        "DA_BASELINE": config.DA_BASELINE,
+        # Network structure
+        "N_E": config.N_E,
+        "N_I": config.N_I,
+        "CONN_PROB": config.CONN_PROB,
+        "W_EXC": config.W_EXC,
+        "W_INH": config.W_INH,
+        "RANDOM_SEED": config.RANDOM_SEED,
+        # Receptor fractions
+        "FRAC_E_D1": config.FRAC_E_D1,
+        "FRAC_E_D2": config.FRAC_E_D2,
+        "FRAC_I_D1": config.FRAC_I_D1,
+        "FRAC_I_D2": config.FRAC_I_D2,
+        # Simulation
+        "dt": config.DT,
+        "device": str(device),
+    }
+
     if resume_mode:
         exp_config = {
+            **common_params,
             "duration": duration_ms if user_specified_duration else "auto",
             "checkpoint": args.resume,
             "new_da": args.da,
-            "dt": config.DT,
-            "device": str(device),
             "note": f"Resume from checkpoint, new DA={args.da}nM",
         }
     elif two_stage:
         exp_config = {
+            **common_params,
             "duration": duration_ms if user_specified_duration else "auto",
             "da_level_1": args.da,
             "da_level_2": args.da2,
             "phase2_onset": phase2_onset_ms if phase2_onset_ms else "auto",
-            "dt": config.DT,
-            "device": str(device),
             "note": (f"Two-Stage DA: {args.da}nM → {args.da2}nM "
                      f"(D1 Tau_on={config.TAU_ON_D1}ms, D2 Tau_on={config.TAU_ON_D2}ms)"),
         }
     elif ckpt_mode:
         exp_config = {
+            **common_params,
             "duration": duration_ms,
             "target_da": args.da,
             "control_da": 0.0,
-            "dt": config.DT,
-            "device": str(device),
             "note": f"Checkpoint mode: Ctrl=0nM, Exp={args.da}nM, Duration={args.duration}s",
         }
     else:
         exp_config = {
+            **common_params,
             "duration": duration_ms,
             "target_da": args.da,
-            "dt": config.DT,
-            "device": str(device),
             "note": f"D1+D2 Kinetics (DA={args.da}nM, Duration={args.duration}s)",
         }
     save_args(exp_config, save_dir)
@@ -241,7 +286,6 @@ def main():
     # 5. 分析与绘图
     print("🎨 Generating Plots...")
     t_plot_start = time.time()
-    import numpy as np
     analyzer = PFCAnalyzer(data)
 
     # Pre-compute is no longer needed; combined plots handle y-axis unification internally
@@ -254,7 +298,6 @@ def main():
     plot_combined_rates_I(analyzer, save_dir=save_dir)
 
     # Frequency analysis reports — save to file
-    import os
     analyzer.save_report(os.path.join(save_dir, "analysis_report.txt"))
 
     t_plot_elapsed = time.time() - t_plot_start
