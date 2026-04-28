@@ -188,6 +188,11 @@ def plot_combined_raster(analyzer: PFCAnalyzer, save_dir=None,
                     if not _draw_two_stage_lines(ax, analyzer, use_seconds=use_sec):
                         if onset_full > 0:
                             _draw_onset_line(ax, onset_full, analyzer.N)
+                        # For pulse_response mode, also draw DA offset line
+                        da_offset_ms = analyzer.cfg.get('da_offset', None)
+                        if da_offset_ms is not None and analyzer.cfg.get('mode') == 'pulse_response':
+                            offset_x = da_offset_ms / 1000.0 if use_sec else da_offset_ms
+                            _draw_onset_line(ax, offset_x, analyzer.N, label=" DA off", color='#F44336')
 
             if col == 0:
                 ax.set_ylabel("Neuron ID")
@@ -259,7 +264,23 @@ def _draw_da_timeline(ax, analyzer: PFCAnalyzer, batch_idx: int):
         ax.tick_params(axis='both', which='major', labelsize=14)
         return
 
-    if mode == 'dynamic_d1_d2_two_stage':
+    if mode == 'pulse_response':
+        # Pulse mode: baseline → pulse → baseline (square pulse)
+        ctrl_da = cfg.get('control_da', 2.0)
+        target_da = cfg.get('da_level', 15.0)
+        da_offset = cfg.get('da_offset', None)
+        # Batch 0: constant control DA
+        t0 = np.array([0.0, duration])
+        d0 = np.array([ctrl_da, ctrl_da])
+        # Batch 1: baseline → pulse → baseline
+        if da_offset is not None and da_offset < duration:
+            t1 = np.array([0.0, da_onset, da_onset, da_offset, da_offset, duration])
+            d1 = np.array([ctrl_da, ctrl_da, target_da, target_da, ctrl_da, ctrl_da])
+        else:
+            # Fallback: no offset info, draw as step function
+            t1 = np.array([0.0, da_onset, da_onset, duration])
+            d1 = np.array([ctrl_da, ctrl_da, target_da, target_da])
+    elif mode == 'dynamic_d1_d2_two_stage':
         phase1_onset = cfg.get('phase1_da_onset', da_onset)
         phase2_onset = cfg.get('phase2_onset', da_onset)
         da1 = cfg.get('da_level_1', 2.0)
@@ -466,6 +487,11 @@ def _plot_combined_rates(analyzer: PFCAnalyzer, group_names: list,
                 if not _draw_two_stage_lines(ax, analyzer, use_seconds=use_sec):
                     if onset_x > 0:
                         _draw_onset_line(ax, onset_x, ax.get_ylim()[1])
+                    # For pulse_response mode, also draw DA offset line
+                    da_offset_ms = analyzer.cfg.get('da_offset', None)
+                    if da_offset_ms is not None and analyzer.cfg.get('mode') == 'pulse_response':
+                        offset_x = da_offset_ms / 1000.0 if use_sec else da_offset_ms
+                        _draw_onset_line(ax, offset_x, ax.get_ylim()[1], label=" DA off", color='#F44336')
 
             if col == 0:
                 ax.set_ylabel("Firing Rate (Hz)")
@@ -523,6 +549,188 @@ def plot_combined_rates_E(analyzer: PFCAnalyzer, save_dir=None):
 def plot_combined_rates_I(analyzer: PFCAnalyzer, save_dir=None):
     """Inhibitory subgroups only: 2×2 combined figure."""
     _plot_combined_rates(
+        analyzer,
+        group_names=['I-D1', 'I-D2', 'I-Other'],
+        title_prefix="Inhibitory (I)",
+        filename="combined_rates_I.png",
+        save_dir=save_dir,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4. Simplified 2×2 Firing Rate Plot (DA timeline + Full rates only)
+# ---------------------------------------------------------------------------
+def _plot_rates_simple(analyzer: PFCAnalyzer, group_names: list,
+                       title_prefix: str, filename: str,
+                       save_dir=None,
+                       time_win_full: float = 100.0):
+    """
+    Simplified 2×2 firing-rate figure (no zoom rows).
+    Row 0 = DA concentration timeline
+    Row 1 = Full time-range firing rates
+    Col 0 = Control, Col 1 = Exp.
+    """
+    print(f"🎨 Plotting simplified {title_prefix} rates (2×2)...")
+
+    da_onset = analyzer.da_onset
+
+    line_styles = {
+        'E-D1': '-', 'E-D2': '-', 'E-Other': '-',
+        'I-D1': '-', 'I-D2': '-', 'I-Other': '-',
+    }
+
+    fig, axes = plt.subplots(2, 2, figsize=(32, 18), dpi=200,
+                              gridspec_kw={'height_ratios': [1, 3]})
+
+    # ---- Row 0: DA concentration timeline ----
+    for col, batch_idx in enumerate([0, 1]):
+        ax_da = axes[0, col]
+        _draw_da_timeline(ax_da, analyzer, batch_idx)
+        cfg_mode = analyzer.cfg.get('mode', '')
+        if cfg_mode == 'dynamic_d1_d2_two_stage':
+            da1 = analyzer.cfg.get('da_level_1', 0)
+            da2 = analyzer.cfg.get('da_level_2', 0)
+            batch_label = f"Control ({da1} nM)" if batch_idx == 0 else f"Exp ({da1}→{da2} nM)"
+        else:
+            batch_label = f"Control ({analyzer.control_da} nM)" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
+        ax_da.set_title(f"DA Concentration — {batch_label}")
+
+    # ---- Row 1: Full time-range firing rates ----
+    y_max = -np.inf
+    y_min = np.inf
+
+    for col, batch_idx in enumerate([0, 1]):
+        ax = axes[1, col]
+        for grp_name in group_names:
+            if grp_name not in analyzer.groups:
+                continue
+            centers, rate = analyzer.compute_group_rate(batch_idx, grp_name, time_win=time_win_full)
+            if rate is None or len(rate) == 0:
+                continue
+
+            if centers[-1] > 10000:
+                x_data = centers / 1000.0
+            else:
+                x_data = centers
+            y_data = rate
+
+            color = PFCAnalyzer.COLORS.get(grp_name, 'k')
+            ls = line_styles.get(grp_name, '-')
+            lw = 2.5 if grp_name.startswith('E') else 2.0
+            alpha = 0.85 if grp_name.startswith('E') else 0.70
+            ax.plot(x_data, y_data, color=color, label=grp_name,
+                    lw=lw, alpha=alpha, linestyle=ls)
+
+            cur_max = float(np.nanmax(y_data))
+            cur_min = float(np.nanmin(y_data))
+            y_max = max(y_max, cur_max)
+            y_min = min(y_min, cur_min)
+
+    # Unify y-axes and add decorations
+    if y_max > -np.inf and y_min < np.inf:
+        y_range = y_max - y_min
+        margin = y_range * 0.10 if y_range > 0 else 1.0
+        ylim = (y_min - margin, y_max + margin)
+    else:
+        ylim = None
+
+    for col, batch_idx in enumerate([0, 1]):
+        ax = axes[1, col]
+        if analyzer.duration > 10000:
+            ax.set_xlim(0, analyzer.duration / 1000.0)
+            ax.set_xlabel("Time (s)")
+            onset_x = da_onset / 1000.0
+        else:
+            ax.set_xlim(0, analyzer.duration)
+            ax.set_xlabel("Time (ms)")
+            onset_x = da_onset
+        if ylim:
+            ax.set_ylim(ylim[0], ylim[1])
+
+        # Draw DA onset/offset lines
+        use_sec = analyzer.duration > 10000
+        if not _draw_two_stage_lines(ax, analyzer, use_seconds=use_sec):
+            if onset_x > 0:
+                _draw_onset_line(ax, onset_x, ax.get_ylim()[1])
+            da_offset_ms = analyzer.cfg.get('da_offset', None)
+            if da_offset_ms is not None and analyzer.cfg.get('mode') == 'pulse_response':
+                offset_x = da_offset_ms / 1000.0 if use_sec else da_offset_ms
+                _draw_onset_line(ax, offset_x, ax.get_ylim()[1], label=" DA off", color='#F44336')
+
+        if col == 0:
+            ax.set_ylabel("Firing Rate (Hz)")
+        ax.legend(fontsize=10, loc='lower left', ncol=3, framealpha=0.7)
+
+        ax.tick_params(axis='both', which='major', labelsize=14)
+        ax.grid(True, linestyle='--', alpha=0.3)
+
+        cfg_mode = analyzer.cfg.get('mode', '')
+        if cfg_mode == 'dynamic_d1_d2_two_stage':
+            da1 = analyzer.cfg.get('da_level_1', 0)
+            da2 = analyzer.cfg.get('da_level_2', 0)
+            batch_label = f"Control ({da1} nM)" if batch_idx == 0 else f"Exp ({da1}→{da2} nM)"
+        else:
+            batch_label = f"Control ({analyzer.control_da} nM)" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
+        ax.set_title(f"{title_prefix} — {batch_label}")
+
+        # ---- Annotate D1/D2 ΔRate on Exp panel ----
+        if col == 1 and da_onset > 0:
+            delta_groups = [g for g in ['E-D1', 'E-D2', 'I-D1', 'I-D2'] if g in group_names and g in analyzer.groups]
+            if delta_groups:
+                delta_lines = []
+                for grp_name in delta_groups:
+                    centers, rate = analyzer.compute_group_rate(batch_idx, grp_name, time_win=time_win_full)
+                    if rate is None or len(rate) == 0:
+                        continue
+                    pre_mask = centers < da_onset
+                    post_mask = centers >= da_onset
+                    if np.any(pre_mask) and np.any(post_mask):
+                        pre_mean = float(np.mean(rate[pre_mask]))
+                        post_mean = float(np.mean(rate[post_mask]))
+                        delta = post_mean - pre_mean
+                        arrow = '↑' if delta > 0 else ('↓' if delta < 0 else '→')
+                        delta_lines.append(f"{grp_name}: {pre_mean:.2f}→{post_mean:.2f} ({delta:+.2f} {arrow})")
+                if delta_lines:
+                    text_str = "ΔRate (Pre→Post DA)\n" + "\n".join(delta_lines)
+                    ax.text(0.98, 0.97, text_str, transform=ax.transAxes,
+                            fontsize=11, verticalalignment='top', horizontalalignment='right',
+                            fontfamily='monospace',
+                            bbox=dict(boxstyle='round,pad=0.4', facecolor='lightyellow',
+                                      edgecolor='gray', alpha=0.9))
+
+    plt.tight_layout()
+    if save_dir:
+        save_path = save_dir / filename
+        plt.savefig(save_path, bbox_inches='tight')
+        print(f"📊 Saved: {save_path}")
+    plt.close(fig)
+
+
+def plot_rates_simple_all(analyzer: PFCAnalyzer, save_dir=None):
+    """Simplified 2×2: All 6 subgroups, DA timeline + full rates only."""
+    _plot_rates_simple(
+        analyzer,
+        group_names=['E-D1', 'E-D2', 'E-Other', 'I-D1', 'I-D2', 'I-Other'],
+        title_prefix="All Population",
+        filename="combined_rates_all.png",
+        save_dir=save_dir,
+    )
+
+
+def plot_rates_simple_E(analyzer: PFCAnalyzer, save_dir=None):
+    """Simplified 2×2: Excitatory subgroups only."""
+    _plot_rates_simple(
+        analyzer,
+        group_names=['E-D1', 'E-D2', 'E-Other'],
+        title_prefix="Excitatory (E)",
+        filename="combined_rates_E.png",
+        save_dir=save_dir,
+    )
+
+
+def plot_rates_simple_I(analyzer: PFCAnalyzer, save_dir=None):
+    """Simplified 2×2: Inhibitory subgroups only."""
+    _plot_rates_simple(
         analyzer,
         group_names=['I-D1', 'I-D2', 'I-Other'],
         title_prefix="Inhibitory (I)",

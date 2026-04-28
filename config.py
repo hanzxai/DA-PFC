@@ -38,7 +38,7 @@ V_TH = -50.0        # 阈值电位 (mV)  [生理值: -50 mV]
 R_BASE = 0.1        # 基础膜电阻 (GΩ) = 100 MΩ  [单位: mV/pA = GΩ]
 C_E = 250.0         # 兴奋性神经元膜电容 (pF)  [τ_m(E) = R_BASE * C_E = 25 ms]
 C_I = 90.0          # 抑制性神经元膜电容 (pF)  [τ_m(I) = R_BASE * C_I = 9 ms]
-TAU_SYN = 5.0       # 突触时间常数 (ms)
+TAU_SYN = 100.0     # 突触时间常数 (ms) [NMDA-like slow synapse, Wang 2002]
 T_REF = 5.0         # 不应期 (ms)
 
 # 背景输入
