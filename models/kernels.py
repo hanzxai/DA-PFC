@@ -1280,8 +1280,307 @@ def run_dynamic_d1_d2_kernel_sine(
             I_syn += torch.matmul(spikes.float(), W_t)
 
     final_state = torch.cat([V, I_syn, t_last_spike, alpha_d1, alpha_d2], dim=1)
-    return spike_records[:spike_count], v_traces, final_state, alpha_d1_trace[:alpha_record_idx], alpha_d2_trace[:alpha_record_idx], da_trace[:alpha_record_idx]
+    return spike_records[:spike_count], v_traces, final_state, alpha_d1_trace[:alpha_record_idx], alpha_d2_trace[:alpha_record_idx]
 
+
+# ==============================================================================
+# Kernel WM-Dual: Working-Memory task with dual-channel synapses (AMPA + NMDA)
+#
+#   Scientific motivation:
+#     The single-channel kernel uses tau_syn = 100 ms uniformly, which makes
+#     ALL synapses (including the I-WM → Mem feedback) react slowly.  As a
+#     result the WTA shared-inhibition loop cannot suppress runaway activity
+#     before the cue, *and* once the cue is removed the recurrent EPSC
+#     decays passively with τ = 100 ms regardless of post-cue firing — no
+#     true attractor forms.
+#
+#   This kernel splits synaptic current into two channels (Wang 2002):
+#       I_ampa : tau_ampa = 5  ms — every synapse EXCEPT intra-pool E→E
+#                                   (E-BG, I population, E2I, I2E, etc.)
+#                                   Linear EPSC accumulation (no saturation).
+#       I_nmda : tau_nmda = 100 ms — only Mem-A↔Mem-A and Mem-B↔Mem-B
+#                                   intra-pool E→E (the "memory channel").
+#                                   *** Wang-2002 saturating gate ***:
+#                                       ds_j/dt = -s_j/tau_nmda
+#                                                 + alpha_gate*(1-s_j)*spike_j
+#                                       s_j ∈ [0, 1]
+#                                       I_nmda = (s @ W_nmda_t) * J_nmda_scale
+#                                   The (1-s) factor implements receptor
+#                                   saturation, which is what gives a stable
+#                                   high fixed-point (attractor) instead of
+#                                   the runaway/decay seen in pure linear
+#                                   EPSC kernels.
+#     Total synaptic input is I_syn = I_ampa + I_nmda (then scaled by D1/D2
+#     synaptic-scaling factor, same as before).
+#
+#   Mean-field attractor condition (informal):
+#     For self-recurrent NMDA:  N*p*J*s_inf(r)*R > (V_th - V_inf_bg)
+#     With s_inf(r) = alpha*tau*r / (1 + alpha*tau*r), the saturation gives
+#     a sigmoidal f-I curve that admits two stable fixed points (low/high).
+# ==============================================================================
+@torch.jit.script
+def run_wm_kernel_dual(
+    W_ampa_t: torch.Tensor,
+    W_nmda_t: torch.Tensor,
+    mask_d1: torch.Tensor,
+    mask_d2: torch.Tensor,
+    init_state: torch.Tensor,
+    da_base: float,
+    da_pulse: float,
+    da_pulse_onset: float,
+    da_pulse_offset: float,
+    stim_mask_a: torch.Tensor,
+    stim_mask_b: torch.Tensor,
+    cue_a_onset: float,
+    cue_a_offset: float,
+    cue_a_amplitude: float,
+    cue_b_onset: float,
+    cue_b_offset: float,
+    cue_b_amplitude: float,
+    duration: float,
+    dt: float,
+    record_indices: torch.Tensor,
+    n_exc: int,
+    alpha_record_interval: int,
+    params: torch.Tensor,
+    mem_pool_mask: torch.Tensor,
+    mem_bg_offset: float,
+    sfa_b: float,
+    sfa_tau: float,
+    da_ramp_up_ms: float = 0.0,
+    da_ramp_down_ms: float = 0.0,
+):
+    """Working-Memory task kernel with dual AMPA/NMDA synaptic channels.
+
+    Scheme-B addition (mem_bg_offset):
+        Add a constant DC offset (typically negative, e.g. -30 pA) to the
+        background current of *only* the Mem-A∪Mem-B pool neurons (selected
+        by `mem_pool_mask`).
+
+    Spike-Frequency Adaptation (SFA):
+        Each Mem-pool neuron maintains an adaptation variable w_adapt (pA).
+        On each spike: w_adapt += sfa_b (e.g. +5 pA).
+        Each timestep: w_adapt *= exp(-dt/sfa_tau) (e.g. tau=1500 ms).
+        w_adapt is subtracted from I_total (hyperpolarising aftercurrent).
+        Only applied to Mem-A∪Mem-B neurons (via mem_pool_mask).
+        This produces a slow, biologically realistic decay of persistent
+        activity during the delay period (Compte et al. 2000).
+    """
+    # --- Unpack params ---
+    V_rest   = float(params[0])
+    V_reset  = float(params[1])
+    V_th     = float(params[2])
+    R_base   = float(params[3])
+    # params[4] = TAU_SYN (legacy) — unused here
+    t_ref    = float(params[5])
+    bg_mean  = float(params[6])
+    bg_std   = float(params[7])
+    C_E      = float(params[8])
+    C_I      = float(params[9])
+    EC50_D1  = float(params[10])
+    EC50_D2  = float(params[11])
+    BETA     = float(params[12])
+    EPS_D1   = float(params[13])
+    EPS_D2   = float(params[14])
+    BIAS_D1  = float(params[15])
+    BIAS_D2  = float(params[16])
+    LAM_D1   = float(params[17])
+    LAM_D2   = float(params[18])
+    TAU_ON_D1  = float(params[19])
+    TAU_OFF_D1 = float(params[20])
+    TAU_ON_D2  = float(params[21])
+    TAU_OFF_D2 = float(params[22])
+    DA_BASELINE = float(params[23])
+    tau_ampa = float(params[25])
+    tau_nmda = float(params[26])
+    alpha_gate = float(params[27])  # NMDA saturation gain (Wang 2002), typ. 0.5
+
+    # --- Derived Langmuir kinetics ---
+    k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
+    k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
+    k_on_d2  = 1.0 / TAU_ON_D2
+    k_off_d2 = 1.0 / TAU_OFF_D2
+
+    # --- Unpack initial state ---
+    N = W_ampa_t.shape[0]
+    batch_size = 2
+    steps = int(duration / dt)
+
+    C_m = torch.full((1, N), C_I, device=W_ampa_t.device)
+    C_m[0, :n_exc] = C_E
+
+    V = init_state[:, :N].clone()
+    # Treat the ckpt I_syn as AMPA (single-channel ckpt was tau=100 ms, but
+    # physically it represents the current synaptic drive — we put it on
+    # AMPA so the first 100 ms relax it; NMDA gates start at 0).
+    I_ampa = init_state[:, N:2*N].clone()
+    # Wang-2002 NMDA gating variables (one per *presynaptic* neuron).
+    # I_nmda_post = (s_nmda @ W_nmda_t).  When s saturates near 1, the
+    # recurrent EPSC stops growing → bistable f-I curve.
+    s_nmda = torch.zeros((batch_size, N), device=W_ampa_t.device)
+    # Spike-frequency adaptation variable (pA, only meaningful on Mem pools)
+    w_adapt = torch.zeros((batch_size, N), device=W_ampa_t.device)
+    decay_adapt = float(torch.exp(torch.tensor(-dt / max(sfa_tau, 1.0))))
+    t_last_spike = torch.full((batch_size, N), -1000.0, device=W_ampa_t.device)
+    alpha_d1 = init_state[:, 3*N:3*N+1].clone()
+    alpha_d2 = init_state[:, 3*N+1:3*N+2].clone()
+
+    decay_ampa = float(torch.exp(torch.tensor(-dt / tau_ampa)))
+    decay_nmda = float(torch.exp(torch.tensor(-dt / tau_nmda)))
+
+    max_spikes = int(steps * N * batch_size * 0.15)
+    spike_records = torch.zeros((max_spikes, 3), device=W_ampa_t.device, dtype=torch.long)
+    spike_count = 0
+    num_record = record_indices.shape[0]
+    v_traces = torch.zeros((steps, num_record), device=W_ampa_t.device)
+
+    n_alpha_records = steps // alpha_record_interval + 1
+    alpha_d1_trace = torch.zeros((n_alpha_records, batch_size), device=W_ampa_t.device)
+    alpha_d2_trace = torch.zeros((n_alpha_records, batch_size), device=W_ampa_t.device)
+    alpha_record_idx = 0
+
+    stim_a_2d = stim_mask_a.unsqueeze(0)  # (1, N)
+    stim_b_2d = stim_mask_b.unsqueeze(0)  # (1, N)
+
+    # --- Time-step loop ---
+    for i in range(steps):
+        current_time = i * dt
+
+        # A. DA concentration schedule (Batch-1 trapezoid: base → pulse → base)
+        #    Shape (when da_ramp_up_ms > 0 or da_ramp_down_ms > 0):
+        #        da_base ─┐                          ┌─ da_base
+        #                  \  ramp_up      ramp_down /
+        #                   \__________  __________/
+        #                              \/  hold
+        #              pulse_onset ─┴ +up   off-down ┴─ pulse_offset
+        #    When both ramp params are 0, this exactly recovers the legacy
+        #    rectangular-pulse behaviour.
+        da_ctrl = da_base
+        if current_time < da_pulse_onset or current_time >= da_pulse_offset:
+            da_exp = da_base
+        else:
+            ramp_up_end   = da_pulse_onset  + da_ramp_up_ms
+            ramp_down_beg = da_pulse_offset - da_ramp_down_ms
+            if da_ramp_up_ms > 0.0 and current_time < ramp_up_end:
+                # rising edge
+                frac = (current_time - da_pulse_onset) / da_ramp_up_ms
+                da_exp = da_base + (da_pulse - da_base) * frac
+            elif da_ramp_down_ms > 0.0 and current_time >= ramp_down_beg:
+                # falling edge
+                frac = (da_pulse_offset - current_time) / da_ramp_down_ms
+                da_exp = da_base + (da_pulse - da_base) * frac
+            else:
+                # hold at da_pulse
+                da_exp = da_pulse
+        da_t = torch.tensor([[da_ctrl], [da_exp]], device=W_ampa_t.device)
+
+        # B. Sigmoid targets
+        s_d1 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D1)))
+        s_d2 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D2)))
+
+        # C. Update alpha_D1 (Langmuir)
+        bind_d1 = k_on_d1 * s_d1 * (1.0 - alpha_d1)
+        unbind_d1 = k_off_d1 * alpha_d1
+        alpha_d1 = alpha_d1 + (bind_d1 - unbind_d1) * dt
+        alpha_d1 = torch.clamp(alpha_d1, 0.0, 1.0)
+
+        # D. Update alpha_D2 (Langmuir)
+        bind_d2 = k_on_d2 * s_d2 * (1.0 - alpha_d2)
+        unbind_d2 = k_off_d2 * alpha_d2
+        alpha_d2 = alpha_d2 + (bind_d2 - unbind_d2) * dt
+        alpha_d2 = torch.clamp(alpha_d2, 0.0, 1.0)
+
+        if i % alpha_record_interval == 0 and alpha_record_idx < n_alpha_records:
+            alpha_d1_trace[alpha_record_idx, 0] = alpha_d1[0, 0]
+            alpha_d1_trace[alpha_record_idx, 1] = alpha_d1[1, 0]
+            alpha_d2_trace[alpha_record_idx, 0] = alpha_d2[0, 0]
+            alpha_d2_trace[alpha_record_idx, 1] = alpha_d2[1, 0]
+            alpha_record_idx += 1
+
+        # E. Assemble modulation parameters
+        mod_R = R_base * (torch.ones((batch_size, N), device=W_ampa_t.device)
+                          + (EPS_D1 * alpha_d1) * mask_d1
+                          - (EPS_D2 * alpha_d2) * mask_d2)
+        I_mod = torch.zeros((batch_size, N), device=W_ampa_t.device)
+        scale_syn = torch.ones((batch_size, N), device=W_ampa_t.device)
+        I_mod += (BIAS_D1 * alpha_d1) * mask_d1
+        scale_syn += (LAM_D1 * alpha_d1) * mask_d1
+        I_mod += (BIAS_D2 * alpha_d2) * mask_d2
+        scale_syn -= (LAM_D2 * alpha_d2) * mask_d2
+
+        # F. Cue injections (same for both batches)
+        if current_time >= cue_a_onset and current_time < cue_a_offset:
+            I_mod = I_mod + cue_a_amplitude * stim_a_2d
+        if current_time >= cue_b_onset and current_time < cue_b_offset:
+            I_mod = I_mod + cue_b_amplitude * stim_b_2d
+
+        # G. Decay synaptic channels.
+        #    AMPA: linear EPSC, decays passively each step.
+        #    NMDA: saturating gate s ∈ [0,1], decays with τ_NMDA.  The
+        #          actual postsynaptic current is computed each step from
+        #          s via matmul (handled below).
+        I_ampa = I_ampa * decay_ampa
+        s_nmda = s_nmda * decay_nmda
+
+        # NMDA postsynaptic current: I_nmda_post = s_pre @ W_nmda_t.
+        # W_nmda_t is non-zero only on intra-pool E→E synapses, so this
+        # only injects current into Mem-{A,B} from Mem-{A,B} presyn s.
+        I_nmda_post = torch.matmul(s_nmda, W_nmda_t)
+        I_syn_total = I_ampa + I_nmda_post
+
+        # Background current: shared random draw across batches, plus a
+        # constant DC offset on Mem-A ∪ Mem-B (Scheme B). The offset is
+        # typically NEGATIVE so the memory pool sits silently in baseline
+        # but can be flipped into the high attractor state by the cue.
+        I_bg = (torch.randn((1, N), device=W_ampa_t.device) * bg_std + bg_mean).expand(batch_size, -1)
+        I_bg = I_bg + mem_bg_offset * mem_pool_mask.unsqueeze(0)
+
+        # Spike-frequency adaptation: decay w_adapt each step, then
+        # subtract it (hyperpolarising) from Mem-pool neurons only.
+        w_adapt = w_adapt * decay_adapt
+        I_adapt = w_adapt * mem_pool_mask.unsqueeze(0)  # only Mem pools
+
+        I_total = (I_syn_total * scale_syn) + I_bg + I_mod - I_adapt
+
+        R_eff = mod_R
+        V_inf = V_rest + R_eff * I_total
+        tau_m = R_eff * C_m
+        decay_v = torch.exp(-dt / tau_m)
+        V_new = V_inf + (V - V_inf) * decay_v
+        is_refractory = (current_time - t_last_spike) <= t_ref
+        V = torch.where(is_refractory, torch.tensor(V_reset, device=W_ampa_t.device), V_new)
+
+        for k in range(num_record):
+            v_traces[i, k] = V[record_indices[k, 0], record_indices[k, 1]]
+
+        spikes = V > V_th
+        if spikes.any():
+            indices = torch.nonzero(spikes)
+            num_now = indices.shape[0]
+            if spike_count + num_now < max_spikes:
+                spike_records[spike_count : spike_count + num_now, 0] = i
+                spike_records[spike_count : spike_count + num_now, 1] = indices[:, 0]
+                spike_records[spike_count : spike_count + num_now, 2] = indices[:, 1]
+                spike_count += num_now
+            V[spikes] = V_reset
+            t_last_spike[spikes] = torch.tensor(current_time, device=W_ampa_t.device)
+            spikes_f = spikes.float()
+            # AMPA channel: linear EPSC accumulation (fast, no saturation).
+            I_ampa += torch.matmul(spikes_f, W_ampa_t)
+            # NMDA channel: Wang-2002 saturating gate update.
+            #   s_j ← s_j + alpha_gate * (1 - s_j) * spike_j
+            # Each spike pushes s closer to 1, never above it.
+            s_nmda = s_nmda + alpha_gate * (1.0 - s_nmda) * spikes_f
+            s_nmda = torch.clamp(s_nmda, 0.0, 1.0)
+            # SFA: each spike adds sfa_b pA to the adaptation current
+            w_adapt = w_adapt + sfa_b * spikes_f
+
+    # Pack final_state in the same layout as the single-channel kernel.
+    # We store the *equivalent post-syn current* I_ampa + (s @ W_nmda_t)
+    # in the I_syn slot for downstream compatibility (analyzer expects it).
+    I_nmda_post_final = torch.matmul(s_nmda, W_nmda_t)
+    final_state = torch.cat([V, I_ampa + I_nmda_post_final, t_last_spike, alpha_d1, alpha_d2], dim=1)
+    return spike_records[:spike_count], v_traces, final_state, alpha_d1_trace[:alpha_record_idx], alpha_d2_trace[:alpha_record_idx]
 
 # ======================================================================
 # 内核 9: D1 + D2 受体动力学 — DA 脉冲 + 外部刺激注入 (从 checkpoint 恢复)
@@ -1605,6 +1904,199 @@ def run_dynamic_d1_d2_kernel_da_schedule(
         scale_syn -= (LAM_D2 * alpha_d2) * mask_d2
 
         # F. LIF exact integration
+        I_syn = I_syn * decay_factor
+        I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
+        I_total = (I_syn * scale_syn) + I_bg + I_mod
+
+        R_eff = mod_R
+        V_inf = V_rest + R_eff * I_total
+        tau_m = R_eff * C_m
+        decay_v = torch.exp(-dt / tau_m)
+        V_new = V_inf + (V - V_inf) * decay_v
+        is_refractory = (current_time - t_last_spike) <= t_ref
+        V = torch.where(is_refractory, torch.tensor(V_reset, device=W_t.device), V_new)
+
+        for k in range(num_record):
+            v_traces[i, k] = V[record_indices[k, 0], record_indices[k, 1]]
+
+        spikes = V > V_th
+        if spikes.any():
+            indices = torch.nonzero(spikes)
+            num_now = indices.shape[0]
+            if spike_count + num_now < max_spikes:
+                spike_records[spike_count : spike_count + num_now, 0] = i
+                spike_records[spike_count : spike_count + num_now, 1] = indices[:, 0]
+                spike_records[spike_count : spike_count + num_now, 2] = indices[:, 1]
+                spike_count += num_now
+            V[spikes] = V_reset
+            t_last_spike[spikes] = torch.tensor(current_time, device=W_t.device)
+            I_syn += torch.matmul(spikes.float(), W_t)
+
+    final_state = torch.cat([V, I_syn, t_last_spike, alpha_d1, alpha_d2], dim=1)
+    return spike_records[:spike_count], v_traces, final_state, alpha_d1_trace[:alpha_record_idx], alpha_d2_trace[:alpha_record_idx]
+
+
+# ======================================================================
+# Kernel WM: Working-Memory task kernel (resume from checkpoint)
+#
+#   Scientific purpose:
+#     Implement an ODR-style Working-Memory protocol on the structured
+#     network produced by `create_wm_network`.  Both batches resume from
+#     the same DA-baseline (e.g. 2 nM) checkpoint state.  A brief external
+#     current is injected into the cue-pool ("Mem-A") during the cue window;
+#     after cue offset the network must maintain elevated activity in
+#     Mem-A throughout the delay period via recurrent excitation alone.
+#
+#   Differences from `run_dynamic_d1_d2_kernel_pulse_stim`:
+#     1. DA can be held constant (da_pulse_onset == da_pulse_offset ⇒ pure
+#        baseline run) OR pulsed during the cue.  Fully programmable.
+#     2. Two independent stimulus channels (A & B) are supported, so we can
+#        run distractor experiments later by re-using the same kernel.
+#     3. Both batches receive the SAME cue → the only difference between
+#        Batch 0 and Batch 1 is whether the experimental DA pulse fires.
+#        For a clean WM-1 demo, set da_base = da_pulse so both batches run
+#        at the same DA tone.  For DA-modulated WM, set da_pulse > da_base.
+# ======================================================================
+@torch.jit.script
+def run_wm_kernel(
+    W_t: torch.Tensor,
+    mask_d1: torch.Tensor,
+    mask_d2: torch.Tensor,
+    init_state: torch.Tensor,
+    da_base: float,
+    da_pulse: float,
+    da_pulse_onset: float,
+    da_pulse_offset: float,
+    stim_mask_a: torch.Tensor,
+    stim_mask_b: torch.Tensor,
+    cue_a_onset: float,
+    cue_a_offset: float,
+    cue_a_amplitude: float,
+    cue_b_onset: float,
+    cue_b_offset: float,
+    cue_b_amplitude: float,
+    duration: float,
+    dt: float,
+    record_indices: torch.Tensor,
+    n_exc: int,
+    alpha_record_interval: int,
+    params: torch.Tensor,
+):
+    """Working-Memory task kernel resuming from a DA-baseline checkpoint."""
+    # --- Unpack params ---
+    V_rest   = float(params[0])
+    V_reset  = float(params[1])
+    V_th     = float(params[2])
+    R_base   = float(params[3])
+    tau_syn  = float(params[4])
+    t_ref    = float(params[5])
+    bg_mean  = float(params[6])
+    bg_std   = float(params[7])
+    C_E      = float(params[8])
+    C_I      = float(params[9])
+    EC50_D1  = float(params[10])
+    EC50_D2  = float(params[11])
+    BETA     = float(params[12])
+    EPS_D1   = float(params[13])
+    EPS_D2   = float(params[14])
+    BIAS_D1  = float(params[15])
+    BIAS_D2  = float(params[16])
+    LAM_D1   = float(params[17])
+    LAM_D2   = float(params[18])
+    TAU_ON_D1  = float(params[19])
+    TAU_OFF_D1 = float(params[20])
+    TAU_ON_D2  = float(params[21])
+    TAU_OFF_D2 = float(params[22])
+    DA_BASELINE = float(params[23])
+    # --- Derived Langmuir kinetics ---
+    k_on_d1  = 1.0 / (TAU_ON_D1 - 3000)
+    k_off_d1 = 1.0 / (TAU_OFF_D1 + 3000)
+    k_on_d2  = 1.0 / TAU_ON_D2
+    k_off_d2 = 1.0 / TAU_OFF_D2
+
+    # --- Unpack initial state ---
+    N = W_t.shape[0]
+    batch_size = 2
+    steps = int(duration / dt)
+
+    C_m = torch.full((1, N), C_I, device=W_t.device)
+    C_m[0, :n_exc] = C_E
+
+    V = init_state[:, :N].clone()
+    I_syn = init_state[:, N:2*N].clone()
+    t_last_spike = torch.full((batch_size, N), -1000.0, device=W_t.device)
+    alpha_d1 = init_state[:, 3*N:3*N+1].clone()
+    alpha_d2 = init_state[:, 3*N+1:3*N+2].clone()
+
+    decay_factor = float(torch.exp(torch.tensor(-dt / tau_syn)))
+
+    max_spikes = int(steps * N * batch_size * 0.15)
+    spike_records = torch.zeros((max_spikes, 3), device=W_t.device, dtype=torch.long)
+    spike_count = 0
+    num_record = record_indices.shape[0]
+    v_traces = torch.zeros((steps, num_record), device=W_t.device)
+
+    n_alpha_records = steps // alpha_record_interval + 1
+    alpha_d1_trace = torch.zeros((n_alpha_records, batch_size), device=W_t.device)
+    alpha_d2_trace = torch.zeros((n_alpha_records, batch_size), device=W_t.device)
+    alpha_record_idx = 0
+
+    stim_a_2d = stim_mask_a.unsqueeze(0)  # (1, N)
+    stim_b_2d = stim_mask_b.unsqueeze(0)  # (1, N)
+
+    # --- Time-step loop ---
+    for i in range(steps):
+        current_time = i * dt
+
+        # A. DA concentration schedule
+        da_ctrl = da_base
+        if current_time >= da_pulse_onset and current_time < da_pulse_offset:
+            da_exp = da_pulse
+        else:
+            da_exp = da_base
+        da_t = torch.tensor([[da_ctrl], [da_exp]], device=W_t.device)
+
+        # B. Sigmoid targets
+        s_d1 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D1)))
+        s_d2 = 1.0 / (1.0 + torch.exp(-BETA * (da_t - EC50_D2)))
+
+        # C. Update alpha_D1 (Langmuir)
+        bind_d1 = k_on_d1 * s_d1 * (1.0 - alpha_d1)
+        unbind_d1 = k_off_d1 * alpha_d1
+        alpha_d1 = alpha_d1 + (bind_d1 - unbind_d1) * dt
+        alpha_d1 = torch.clamp(alpha_d1, 0.0, 1.0)
+
+        # D. Update alpha_D2 (Langmuir)
+        bind_d2 = k_on_d2 * s_d2 * (1.0 - alpha_d2)
+        unbind_d2 = k_off_d2 * alpha_d2
+        alpha_d2 = alpha_d2 + (bind_d2 - unbind_d2) * dt
+        alpha_d2 = torch.clamp(alpha_d2, 0.0, 1.0)
+
+        if i % alpha_record_interval == 0 and alpha_record_idx < n_alpha_records:
+            alpha_d1_trace[alpha_record_idx, 0] = alpha_d1[0, 0]
+            alpha_d1_trace[alpha_record_idx, 1] = alpha_d1[1, 0]
+            alpha_d2_trace[alpha_record_idx, 0] = alpha_d2[0, 0]
+            alpha_d2_trace[alpha_record_idx, 1] = alpha_d2[1, 0]
+            alpha_record_idx += 1
+
+        # E. Assemble modulation parameters
+        mod_R = R_base * (torch.ones((batch_size, N), device=W_t.device)
+                          + (EPS_D1 * alpha_d1) * mask_d1
+                          - (EPS_D2 * alpha_d2) * mask_d2)
+        I_mod = torch.zeros((batch_size, N), device=W_t.device)
+        scale_syn = torch.ones((batch_size, N), device=W_t.device)
+        I_mod += (BIAS_D1 * alpha_d1) * mask_d1
+        scale_syn += (LAM_D1 * alpha_d1) * mask_d1
+        I_mod += (BIAS_D2 * alpha_d2) * mask_d2
+        scale_syn -= (LAM_D2 * alpha_d2) * mask_d2
+
+        # F. Cue injections (same for both batches)
+        if current_time >= cue_a_onset and current_time < cue_a_offset:
+            I_mod = I_mod + cue_a_amplitude * stim_a_2d
+        if current_time >= cue_b_onset and current_time < cue_b_offset:
+            I_mod = I_mod + cue_b_amplitude * stim_b_2d
+
+        # G. LIF exact integration
         I_syn = I_syn * decay_factor
         I_bg = (torch.randn((1, N), device=W_t.device) * bg_std + bg_mean).expand(batch_size, -1)
         I_total = (I_syn * scale_syn) + I_bg + I_mod

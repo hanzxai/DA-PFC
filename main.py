@@ -103,6 +103,9 @@ def parse_args():
                         help="仿真结束后保存 checkpoint 到 checkpoints/ 目录 (默认不保存)")
     parser.add_argument("--da-baseline", type=float, default=None,
                         help="覆盖基线 DA 浓度 (nM), 默认使用 config.DA_BASELINE=2.0")
+    parser.add_argument("--bg-mean", type=float, default=None,
+                        help="覆盖背景电流均值 BG_MEAN (pA), 默认使用 config.BG_MEAN=200. "
+                             "较低值(如160)可让网络处于亚阈值, 更适合工作记忆双稳态.")
     return parser.parse_args()
 
 def main():
@@ -124,6 +127,15 @@ def main():
     if args.da_baseline is not None:
         config.DA_BASELINE = args.da_baseline
         print(f"🔧 DA_BASELINE overridden to {args.da_baseline} nM")
+
+    # Override BG_MEAN if user specified --bg-mean
+    # IMPORTANT: must happen *before* any tensor / network / runner construction,
+    # because BG_MEAN is read from config at run-time and embedded in the
+    # checkpoint's parameter fingerprint. The ckpt filename will contain bg{value}.
+    if args.bg_mean is not None:
+        config.BG_MEAN = args.bg_mean
+        print(f"🔧 BG_MEAN overridden to {args.bg_mean} pA "
+              f"(V_inf = {config.V_REST + config.R_BASE * args.bg_mean:.1f} mV vs V_th={config.V_TH} mV)")
 
     # 将秒转换为毫秒
     duration_ms = args.duration * 1000.0

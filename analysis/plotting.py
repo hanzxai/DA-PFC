@@ -66,43 +66,101 @@ def _draw_two_stage_lines(ax, analyzer, use_seconds=True):
 
 
 # ---------------------------------------------------------------------------
-# 1. Combined Raster Plot  (2×2)
+# 1. Combined Raster Plot  (3×N where N=1 if Ctrl/Exp share DA, else 2)
 # ---------------------------------------------------------------------------
+def _is_da_modulated(analyzer: PFCAnalyzer) -> bool:
+    """Return True iff Ctrl (batch 0) and Exp (batch 1) DA schedules differ.
+
+    For WM demos this is encoded as cfg['da_modulated'].  For other
+    experiment modes we conservatively assume the two batches differ.
+    """
+    cfg = analyzer.cfg
+    if 'da_modulated' in cfg:
+        return bool(cfg['da_modulated'])
+    # Fall back: if there's no explicit flag, treat any non-trivial DA onset
+    # as modulated (legacy paths).
+    return analyzer.da_onset > 0 and analyzer.da_level != analyzer.control_da
+
+
 def plot_combined_raster(analyzer: PFCAnalyzer, save_dir=None,
                          max_spikes_per_group: int = 80000,
                          zoom_window: float = 2000.0):
     """
-    Produce a single 3×2 raster figure:
-      [full-Control]        [full-Exp ]
-      [before-DA-Control]   [before-DA-Exp ]
-      [after-DA-Control]    [after-DA-Exp ]
-    """
-    print("🎨 Plotting combined raster (3×2)...")
+    Produce a 3-row raster figure with WM-overview-style colouring.
 
-    target_groups = ['E-D1', 'E-D2', 'E-Other', 'I-D1', 'I-D2', 'I-Other']
+    Layout:
+      Row 0: Full time-range (with red dashed boxes marking the zoom windows)
+      Row 1: Zoom-in of the pre-cue / before-DA segment
+      Row 2: Zoom-in of the post-DA / late-delay segment
+
+    Columns:
+      • If DA is *not* modulated between Ctrl and Exp (e.g. a DA=2 nM demo
+        run), the two batches are bit-exact identical at the network level
+        and we draw a SINGLE column (1 panel per row).
+      • Otherwise, we draw two columns (Control | Experiment).
+
+    Group colouring matches `wm_overview.png` exactly: it uses the
+    `register_wm_groups` palette (Mem-A red, Mem-B blue, E-BG gray,
+    I-D1 orange, I-D2 purple, I-Other green, etc.), so the raster legend
+    is consistent with the firing-rate panel below.
+    """
+    print("🎨 Plotting combined raster ...")
+
+    # ---- Decide the group palette ---------------------------------------
+    # Prefer WM-augmented groups when present so the colours match
+    # wm_overview.png exactly; fall back to the standard 6 receptor groups.
+    if 'Mem-A' in analyzer.groups:
+        # WM run — use the same labels & colours as wm_overview.
+        target_groups = ['Mem-A', 'Mem-B', 'E-BG', 'E-D2',
+                         'I-D1', 'I-D2', 'I-Other']
+    else:
+        target_groups = ['E-D1', 'E-D2', 'E-Other', 'I-D1', 'I-D2', 'I-Other']
+
+    # ---- Single- vs two-column layout -----------------------------------
+    da_modulated = _is_da_modulated(analyzer)
+    batch_indices = [0, 1] if da_modulated else [0]
+    n_cols = len(batch_indices)
+
     da_onset = analyzer.da_onset
 
-    # Before-DA window: a segment from baseline period
-    before_end = da_onset
-    before_start = max(0.0, before_end - zoom_window)
-
-    # After-DA window: pick a segment well after DA onset so alpha is near steady-state
-    # Use the last `zoom_window` ms of the simulation, or midpoint if duration is very long
-    da_duration = analyzer.duration - da_onset
-    if da_duration > zoom_window * 3:
-        # Pick a window starting at 2/3 of the DA period
-        after_start = da_onset + da_duration * 0.6
-        after_end = after_start + zoom_window
-        if after_end > analyzer.duration:
-            after_end = analyzer.duration
-            after_start = after_end - zoom_window
+    # ---- Pick zoom windows ----------------------------------------------
+    # For WM runs use cue/delay metadata; otherwise fall back to the
+    # legacy Before-DA / After-DA windows.
+    protocol = analyzer.cfg.get('wm_protocol', {})
+    if protocol:
+        cue_on  = float(protocol.get('cue_a_onset', 0.0))
+        cue_off = float(protocol.get('cue_a_offset', cue_on))
+        delay_end = cue_off + float(protocol.get('delay_ms', 0.0))
+        # Pre-cue window: last `zoom_window` ms of baseline ending at cue_on
+        pre_end   = cue_on
+        pre_start = max(0.0, pre_end - zoom_window)
+        # Late-delay window: last `zoom_window` ms of the delay phase
+        post_end   = delay_end
+        post_start = max(cue_off, post_end - zoom_window)
+        zoom_labels = ('Zoom-in: Pre-cue', 'Zoom-in: Late-delay')
     else:
-        after_end = analyzer.duration
-        after_start = max(da_onset, after_end - zoom_window)
+        pre_end = da_onset
+        pre_start = max(0.0, pre_end - zoom_window)
+        da_duration = analyzer.duration - da_onset
+        if da_duration > zoom_window * 3:
+            post_start = da_onset + da_duration * 0.6
+            post_end   = post_start + zoom_window
+            if post_end > analyzer.duration:
+                post_end   = analyzer.duration
+                post_start = post_end - zoom_window
+        else:
+            post_end   = analyzer.duration
+            post_start = max(da_onset, post_end - zoom_window)
+        zoom_labels = ('Zoom-in: Before DA', 'Zoom-in: After DA')
 
-    fig, axes = plt.subplots(3, 2, figsize=(32, 30), dpi=200)
+    # ---- Figure layout ---------------------------------------------------
+    fig_w = 16 * n_cols
+    fig, axes = plt.subplots(3, n_cols, figsize=(fig_w, 30), dpi=200,
+                             squeeze=False)
 
-    for col, batch_idx in enumerate([0, 1]):
+    rng = np.random.default_rng(42)
+
+    for col, batch_idx in enumerate(batch_indices):
         # --- get spike data for this batch ---
         all_s = analyzer.data['spikes']
         mask_batch = all_s[:, 1] == batch_idx
@@ -113,40 +171,40 @@ def plot_combined_raster(analyzer: PFCAnalyzer, save_dir=None,
         ts_ms = spikes_batch[:, 0] * analyzer.dt
         neuron_ids = spikes_batch[:, 1]
 
-        # Auto ms → s for full plot
+        # Auto ms → s for the full panel
         if analyzer.duration > 10000:
             x_full = ts_ms / 1000.0
             x_label_full = "Time (s)"
-            onset_full = da_onset / 1000.0
-            x_max_full = analyzer.duration / 1000.0
+            x_max_full   = analyzer.duration / 1000.0
+            sec_scale    = 1000.0  # divide ms-windows by this for the box
         else:
             x_full = ts_ms
             x_label_full = "Time (ms)"
-            onset_full = da_onset
-            x_max_full = analyzer.duration
+            x_max_full   = analyzer.duration
+            sec_scale    = 1.0
 
-        rng = np.random.default_rng(42)
-
-        # Row 0: Full, Row 1: Before DA, Row 2: After DA
+        # Row 0: Full, Row 1: Pre, Row 2: Post
         zoom_configs = [
-            {'zoom': False, 'start': None, 'end': None, 'label': 'Full'},
-            {'zoom': True, 'start': before_start, 'end': before_end,
-             'label': f'Before DA [{before_start:.0f}–{before_end:.0f} ms]'},
-            {'zoom': True, 'start': after_start, 'end': after_end,
-             'label': f'After DA [{after_start:.0f}–{after_end:.0f} ms]'},
+            {'zoom': False, 'start': None, 'end': None,
+             'label': 'Full',                   'is_zoom': False},
+            {'zoom': True,  'start': pre_start,  'end': pre_end,
+             'label': zoom_labels[0],           'is_zoom': True},
+            {'zoom': True,  'start': post_start, 'end': post_end,
+             'label': zoom_labels[1],           'is_zoom': True},
         ]
 
-        for row, cfg in enumerate(zoom_configs):
+        for row, zcfg in enumerate(zoom_configs):
             ax = axes[row, col]
 
-            if cfg['zoom']:
-                mask_time = (ts_ms >= cfg['start']) & (ts_ms <= cfg['end'])
+            if zcfg['zoom']:
+                mask_time = (ts_ms >= zcfg['start']) & (ts_ms <= zcfg['end'])
                 x_data = ts_ms[mask_time]
                 n_ids = neuron_ids[mask_time]
             else:
                 x_data = x_full
                 n_ids = neuron_ids
 
+            # ---- scatter each group with its registered colour ----------
             for grp_name in target_groups:
                 if grp_name not in analyzer.groups:
                     continue
@@ -156,19 +214,17 @@ def plot_combined_raster(analyzer: PFCAnalyzer, save_dir=None,
                 if len(gx) == 0:
                     continue
                 if len(gx) > max_spikes_per_group:
-                    idx = rng.choice(len(gx), size=max_spikes_per_group, replace=False)
+                    idx = rng.choice(len(gx), size=max_spikes_per_group,
+                                     replace=False)
                     gx, gy = gx[idx], gy[idx]
-                color = PFCAnalyzer.COLORS.get(grp_name, 'black')
+                color = analyzer.COLORS.get(grp_name, 'black')
 
-                # Adjust marker size & alpha for readability
-                if cfg['zoom']:
-                    # Zoom panels: larger, more opaque dots
+                if zcfg['is_zoom']:
                     ax.scatter(gx, gy, s=8, color=color, alpha=0.85,
-                               linewidths=0, rasterized=True)
+                               linewidths=0, rasterized=True, label=grp_name)
                 else:
-                    # Full panel: moderate size, slightly transparent
-                    ax.scatter(gx, gy, s=4, color=color, alpha=0.55,
-                               linewidths=0, rasterized=True)
+                    ax.scatter(gx, gy, s=4, color=color, alpha=0.65,
+                               linewidths=0, rasterized=True, label=grp_name)
 
             # E/I boundary
             ax.axhline(analyzer.N_E - 0.5, color='gray', linestyle='-',
@@ -176,23 +232,49 @@ def plot_combined_raster(analyzer: PFCAnalyzer, save_dir=None,
             ax.set_ylim(-1, analyzer.N)
             ax.grid(True, axis='x', linestyle='--', alpha=0.2)
 
-            if cfg['zoom']:
-                ax.set_xlim(cfg['start'], cfg['end'])
+            if zcfg['is_zoom']:
+                ax.set_xlim(zcfg['start'], zcfg['end'])
                 ax.set_xlabel("Time (ms)")
             else:
                 ax.set_xlim(0, x_max_full)
                 ax.set_xlabel(x_label_full)
-                # Draw vertical lines: two-stage mode draws 2 lines, single-stage draws 1
-                if batch_idx == 1:
+
+                # Draw red dashed rectangles marking the two zoom windows.
+                # Convert ms-windows into the panel's x-axis units.
+                box_specs = [
+                    (pre_start  / sec_scale, pre_end  / sec_scale,
+                     '#d62728', zoom_labels[0]),
+                    (post_start / sec_scale, post_end / sec_scale,
+                     '#d62728', zoom_labels[1]),
+                ]
+                for bx0, bx1, bc, blabel in box_specs:
+                    if bx1 <= bx0:
+                        continue
+                    ax.axvspan(bx0, bx1, ymin=0.0, ymax=1.0,
+                               facecolor='none', edgecolor=bc,
+                               linestyle='--', linewidth=2.0, alpha=0.85,
+                               zorder=5)
+                    ax.text((bx0 + bx1) / 2.0, analyzer.N * 0.985, blabel,
+                            ha='center', va='top', fontsize=11,
+                            color=bc, fontweight='bold',
+                            bbox=dict(facecolor='white', alpha=0.8,
+                                      edgecolor='none', pad=1.5),
+                            zorder=6)
+
+                # DA onset / offset markers — only when DA actually changes
+                if da_modulated and batch_idx == 1:
                     use_sec = analyzer.duration > 10000
-                    if not _draw_two_stage_lines(ax, analyzer, use_seconds=use_sec):
-                        if onset_full > 0:
-                            _draw_onset_line(ax, onset_full, analyzer.N)
-                        # For pulse_response mode, also draw DA offset line
+                    if not _draw_two_stage_lines(ax, analyzer,
+                                                 use_seconds=use_sec):
+                        if da_onset > 0:
+                            onset_x = da_onset / sec_scale
+                            _draw_onset_line(ax, onset_x, analyzer.N)
                         da_offset_ms = analyzer.cfg.get('da_offset', None)
-                        if da_offset_ms is not None and analyzer.cfg.get('mode') == 'pulse_response':
-                            offset_x = da_offset_ms / 1000.0 if use_sec else da_offset_ms
-                            _draw_onset_line(ax, offset_x, analyzer.N, label=" DA off", color='#F44336')
+                        if (da_offset_ms is not None and
+                                analyzer.cfg.get('mode') == 'pulse_response'):
+                            offset_x = da_offset_ms / sec_scale
+                            _draw_onset_line(ax, offset_x, analyzer.N,
+                                             label=" DA off", color='#F44336')
 
             if col == 0:
                 ax.set_ylabel("Neuron ID")
@@ -200,8 +282,34 @@ def plot_combined_raster(analyzer: PFCAnalyzer, save_dir=None,
             ax.tick_params(axis='both', which='major', labelsize=14)
 
             # Title
-            batch_label = f"Control ({analyzer.control_da} nM)" if batch_idx == 0 else f"Exp ({analyzer.da_level} nM)"
-            ax.set_title(f"Raster — {batch_label} ({cfg['label']})")
+            if da_modulated:
+                if batch_idx == 0:
+                    batch_label = f"Control ({analyzer.control_da} nM)"
+                else:
+                    batch_label = f"Exp ({analyzer.da_level} nM)"
+            else:
+                batch_label = f"DA = {analyzer.control_da:g} nM"
+            ax.set_title(f"Raster — {batch_label} ({zcfg['label']})")
+
+            # Legend on the top-right of every panel; one entry per group
+            # encountered.  Use markerscale to enlarge the dots in the legend.
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                # de-duplicate while preserving order
+                seen = set(); uniq_h = []; uniq_l = []
+                for h, l in zip(handles, labels):
+                    if l in seen:
+                        continue
+                    seen.add(l); uniq_h.append(h); uniq_l.append(l)
+                ax.legend(uniq_h, uniq_l,
+                          loc='upper right',
+                          ncol=2,
+                          markerscale=4,
+                          fontsize=12,
+                          framealpha=0.85,
+                          handletextpad=0.4,
+                          columnspacing=0.8,
+                          borderpad=0.4)
 
     plt.tight_layout()
     if save_dir:

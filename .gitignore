@@ -60,3 +60,6 @@ sweep_final.txt
 sweep_pid.txt
 sweep_progress.txt
 sweep_status.txt
+
+# --- WM Evaluation outputs ---
+wm_eval/outputs/
