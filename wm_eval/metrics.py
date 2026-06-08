@@ -25,8 +25,11 @@ def _get_protocol_windows(analyzer: PFCAnalyzer) -> dict:
     delay_end = cue_off + delay_dur
     probe_end = delay_end + probe_dur
 
+    # Use last 2s of baseline to avoid transient & alpha ramp-up artefacts
+    baseline_start = max(0.0, cue_on - 2000.0)
+
     return {
-        'baseline':    (0.0, cue_on),
+        'baseline':    (baseline_start, cue_on),
         'cue':         (cue_on, cue_off),
         'delay':       (cue_off, delay_end),
         'delay_early': (cue_off, cue_off + delay_dur / 3.0),

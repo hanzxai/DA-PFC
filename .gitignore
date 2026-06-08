@@ -13,6 +13,17 @@ outputs/sweep_*/*
 # --- Checkpoints (包含 final_state tensor, 不应入库) ---
 checkpoints/
 
+# --- 二进制数据文件 ---
+*.pkl
+*.pth
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.mat
+*.dat
+*.bin
+
 # --- Python 缓存 ---
 __pycache__/
 *.py[cod]
@@ -21,9 +32,21 @@ __pycache__/
 *.egg
 dist/
 build/
+*.so
+*.pyd
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+.cache/
+.mypy_cache/
 
 # --- Jupyter Notebook ---
 .ipynb_checkpoints/
+*.ipynb_checkpoints/*
+*.ipynb
+!*.ipynb  # 除非特别需要，一般不提交ipynb文件
+.ipynb
 
 # --- IDE / 编辑器 ---
 .vscode/
@@ -31,10 +54,16 @@ build/
 *.swp
 *.swo
 *~
+.project
+.classpath
+.settings/
 
 # --- 操作系统 ---
 .DS_Store
 Thumbs.db
+desktop.ini
+ehthumbs.db
+*.lnk
 
 # --- 临时文件 ---
 tmp/
@@ -63,3 +92,31 @@ sweep_status.txt
 
 # --- WM Evaluation outputs ---
 wm_eval/outputs/
+
+# --- 虚拟环境 ---
+venv/
+env/
+ENV/
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# --- 个人配置 ---
+config_local.py
+*.local.py
+
+# --- 编译文件 ---
+*.o
+*.d
+*.obj
+*.exe
+*.out
+*.app
+
+# --- 文档生成 ---
+docs/_build/
+docs/build/
+site/
+_site/
